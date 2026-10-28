@@ -9,6 +9,7 @@ from ..db import get_session
 from ..db.models import Account, AccountType, Direction, Transaction
 from ..services import cards
 from ..services.money import fmt, to_minor
+from . import icons
 from .layout import frame
 
 def _due_chip(x: cards.StatementStatus) -> tuple[str, str]:
@@ -26,7 +27,8 @@ def _due_chip(x: cards.StatementStatus) -> tuple[str, str]:
 def cards_page() -> None:
     with frame("Credit cards", "Statements, payments and what is still due"):
         with get_session() as s:
-            card_accounts = {a.id: a.name for a in s.exec(select(Account).where(Account.type == AccountType.credit_card))}
+            card_objs = {a.id: a for a in s.exec(select(Account).where(Account.type == AccountType.credit_card))}
+            card_accounts = {i: a.name for i, a in card_objs.items()}
             bank_debits = s.exec(
                 select(Transaction, Account.name).join(Account, Account.id == Transaction.account_id)
                 .where(Account.type == AccountType.bank, Transaction.direction == Direction.debit)
@@ -54,9 +56,8 @@ def cards_page() -> None:
             chip_class, chip_text = _due_chip(x)
             with ui.card().classes("w-full et-card-hover et-rise"):
                 with ui.row().classes("w-full items-center gap-5 no-wrap"):
-                    with ui.element("div").classes("et-avatar").style(
-                            "background:linear-gradient(135deg,#3ccfe8,#2a9d8f);width:48px;height:48px"):
-                        ui.icon("credit_card").classes("text-2xl")
+                    if acc := card_objs.get(x.statement.account_id):
+                        ui.html(icons.tile_html(acc, 48), sanitize=False).classes("flex-none")
                     with ui.column().classes("gap-0 w-56"):
                         ui.label(x.account_name).classes("font-semibold")
                         ui.label(f"Statement {x.statement.statement_date:%d %b %Y}").classes("text-xs et-faint")
@@ -68,7 +69,7 @@ def cards_page() -> None:
                         ui.html(
                             '<div style="height:6px;border-radius:6px;background:rgba(255,255,255,.07);overflow:hidden">'
                             f'<div style="width:{paid_pct:.1f}%;height:100%;border-radius:6px;'
-                            'background:linear-gradient(90deg,#8b7cff,#3ccfe8)"></div></div>',
+                            'background:var(--accent-grad)"></div></div>',
                             sanitize=False).classes("w-full")
                     with ui.column().classes("gap-1 items-end w-48"):
                         ui.html(f'<span class="et-chip {chip_class}">{chip_text}</span>', sanitize=False)

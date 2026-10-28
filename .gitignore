@@ -13,3 +13,6 @@ samples/private/
 *.db
 *.db-journal
 .devdata/
+
+# Design process files from the oil-ui skill (screenshots, notes)
+.oil-ui/

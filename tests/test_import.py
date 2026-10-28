@@ -60,3 +60,82 @@ def test_identical_rows_without_balance_are_kept(tmp_path, account_id):
     assert len(p.new_rows) == 2
     commit_import(p)
     assert preview_import(account_id, f, "generic_excel").duplicate_count == 2
+
+
+def test_reapply_rule_types_respects_manual_choices(account_id):
+    from datetime import date as d
+
+    from expense_tracker.db.models import TxnKind
+    from expense_tracker.services.importer import reapply_rule_types
+    from expense_tracker.services.ledger import set_fields
+
+    bill = "WDL TFR   INB SBICARD FOR BILLDESK      SBICARD Payments   0097691162095 AT 12345 MG ROAD"
+    with get_session() as s:
+        rows = [
+            Transaction(account_id=account_id, txn_date=d(2026, 1, 1), description=bill, amount_minor=100,
+                        direction=Direction.debit, kind=TxnKind.expense, fingerprint="a"),
+            Transaction(account_id=account_id, txn_date=d(2026, 1, 2), description=bill, amount_minor=200,
+                        direction=Direction.debit, kind=TxnKind.expense, fingerprint="b"),
+            Transaction(account_id=account_id, txn_date=d(2026, 1, 3), description=bill, amount_minor=300,
+                        direction=Direction.debit, kind=TxnKind.transfer, fingerprint="c"),
+            Transaction(account_id=account_id, txn_date=d(2026, 1, 4), description="UPI-SWIGGY-1@ybl",
+                        amount_minor=400, direction=Direction.debit, kind=TxnKind.expense, fingerprint="e"),
+        ]
+        s.add_all(rows)
+        s.commit()
+        ids = [r.id for r in rows]
+    set_fields(ids[1], kind="expense")  # you said: this one really is an expense
+
+    preview = reapply_rule_types()
+    assert [c.txn_id for c in preview] == [ids[0]]          # dry run lists only the untouched default row
+    with get_session() as s:
+        assert s.get(Transaction, ids[0]).kind == TxnKind.expense  # nothing written yet
+
+    reapply_rule_types(apply=True)
+    with get_session() as s:
+        kinds = [s.get(Transaction, i).kind for i in ids]
+    assert kinds == [TxnKind.cc_payment, TxnKind.expense, TxnKind.transfer, TxnKind.expense]
+    assert reapply_rule_types() == []  # idempotent
+
+
+def test_unticked_rows_are_skipped_and_remembered(tmp_path, account_id):
+    f = tmp_path / "stmt.csv"
+    f.write_text("Date,Description,Amount\n01/01/2026,COFFEE,100.00\n02/01/2026,CARD PAYMENT RECEIVED,5000.00\n"
+                 "03/01/2026,BOOKS,300.00\n")
+    p = preview_import(account_id, f, "generic_excel")
+    coffee, payment, books = (r.fingerprint for r in p.rows)
+    commit_import(p, selected={coffee, books})  # untick the payment
+
+    with get_session() as s:
+        assert sorted(t.description for t in s.exec(select(Transaction))) == ["BOOKS", "COFFEE"]
+
+    # The same rows turn up again (e.g. next, overlapping statement)
+    p2 = preview_import(account_id, f, "generic_excel")
+    by_fp = {r.fingerprint: r for r in p2.rows}
+    assert by_fp[payment].skipped_before and not by_fp[payment].duplicate
+    assert by_fp[coffee].duplicate
+    commit_import(p2)  # default: skipped rows stay out
+    with get_session() as s:
+        assert len(s.exec(select(Transaction)).all()) == 2
+
+    # Changed your mind: ticking it imports it and forgets the skip
+    p3 = preview_import(account_id, f, "generic_excel")
+    commit_import(p3, selected={payment})
+    p4 = preview_import(account_id, f, "generic_excel")
+    assert all(r.duplicate and not r.skipped_before for r in p4.rows)
+
+
+def test_reimporting_a_card_statement_does_not_duplicate_the_bill(tmp_path, account_id):
+    from expense_tracker.db.models import CCStatement
+    from expense_tracker.importers.base import CardSummary
+    from datetime import date as d
+
+    f = tmp_path / "card.csv"
+    f.write_text("Date,Description,Amount\n01/01/2026,COFFEE,100.00\n")
+    for _ in range(2):
+        p = preview_import(account_id, f, "generic_excel")
+        p.statement.card_summary = CardSummary(statement_date=d(2026, 1, 10), due_date=d(2026, 1, 30),
+                                               total_due_minor=10000)
+        commit_import(p)
+    with get_session() as s:
+        assert len(s.exec(select(CCStatement)).all()) == 1

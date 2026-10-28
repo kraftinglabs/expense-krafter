@@ -20,6 +20,7 @@ from sqlmodel import select
 from ..db import get_session
 from ..db.models import (Account, Direction, Frequency, Label, ReimbursementLink, Transaction,
                          TxnKind)
+from . import narration
 
 UNLABELLED = "Unlabelled"
 UNLABELLED_COLOR = "#7d8299"
@@ -31,8 +32,11 @@ _NOISE = re.compile(
 
 
 def merchant_name(description: str) -> str:
-    """'UPI-SWIGGY-1234@ybl' -> 'Swiggy'. Rough, but groups most repeats."""
-    text = _NOISE.sub(" ", description)
+    """Who the money went to / came from. Uses the description rules when one
+    matches ('UPI-SWIGGY-1234@ybl' -> 'Swiggy'), else a rough clean-up."""
+    if (n := narration.parse(description)).parsed:
+        return n.title
+    text = _NOISE.sub(" ", n.text)
     text = _NOISE.sub(" ", text)  # second pass for nested prefixes like "UPI/POS"
     words = text.split()
     return " ".join(words[:3]).title() if words else description.strip()[:30]

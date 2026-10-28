@@ -36,9 +36,23 @@ def _m002_database_id(conn: Connection) -> None:
     conn.exec_driver_sql("INSERT OR IGNORE INTO meta (key, value) VALUES ('db_id', ?)", (uuid.uuid4().hex,))
 
 
+def _m003_account_icon(conn: Connection) -> None:
+    """account.icon: chosen bank icon ('' = automatic)."""
+    if "icon" not in _columns(conn, "account"):
+        conn.exec_driver_sql("ALTER TABLE account ADD COLUMN icon VARCHAR NOT NULL DEFAULT ''")
+
+
+def _m004_kind_manual(conn: Connection) -> None:
+    """transaction.kind_manual: the type was set by hand (rules must not override it)."""
+    if "kind_manual" not in _columns(conn, "transaction"):
+        conn.exec_driver_sql('ALTER TABLE "transaction" ADD COLUMN kind_manual BOOLEAN NOT NULL DEFAULT 0')
+
+
 MIGRATIONS = [
     _m001_mask_account_number,
     _m002_database_id,
+    _m003_account_icon,
+    _m004_kind_manual,
 ]
 
 

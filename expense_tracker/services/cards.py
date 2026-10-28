@@ -56,6 +56,7 @@ def link_payment(statement_id: int, bank_txn_id: int, amount_minor: int) -> None
         s.add(CCPaymentLink(statement_id=statement_id, bank_txn_id=bank_txn_id, amount_minor=amount_minor))
         txn = s.get(Transaction, bank_txn_id)
         txn.kind = TxnKind.cc_payment
+        txn.kind_manual = True  # you linked it to a card bill yourself
         s.add(txn)
         s.commit()
 

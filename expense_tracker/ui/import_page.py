@@ -1,16 +1,19 @@
 from __future__ import annotations
 
+import re
 import shutil
 import tempfile
 from pathlib import Path
 
 from nicegui import events, ui
 
+from ..db.models import TxnKind
 from ..importers import PasswordRequired, parser_options
-from ..services import ledger, vault
-from ..services.importer import ImportPreview, commit_import, preview_import
+from ..services import ledger, narration, vault
+from ..services.importer import ImportPreview, default_kind, commit_import, preview_import
 from ..services.money import fmt
 from .layout import frame
+from .transactions import KIND_LABELS
 
 
 @ui.page("/import")
@@ -91,6 +94,11 @@ def import_page() -> None:
 
         def show_preview() -> None:
             p: ImportPreview = state["preview"]
+            # Pre-ticked: every new row except ones you skipped in an earlier import.
+            state["sel"] = {r.fingerprint for r in p.new_rows if not r.skipped_before}
+            payments = {r.fingerprint for r in p.new_rows
+                        if default_kind(p.account, r.txn.direction, r.txn.description) == TxnKind.cc_payment}
+            skipped_before = sum(r.skipped_before and not r.duplicate for r in p.rows)
             result.clear()
             with result:
                 with ui.card().classes("w-full"):
@@ -99,26 +107,97 @@ def import_page() -> None:
                         ui.label("This exact file was imported before.").classes("et-warn")
                     for w in p.statement.warnings:
                         ui.label(w).classes("et-warn")
-                    ui.label(f"{len(p.rows)} transactions found · {len(p.new_rows)} new · "
-                             f"{p.duplicate_count} duplicates will be skipped")
-                    ui.button(f"Import {len(p.new_rows)} transactions", icon="check",
-                              on_click=do_commit).props("" if p.new_rows else "disable")
-                ui.aggrid({
-                    "columnDefs": [{"field": f} for f in ("status", "date", "description", "debit", "credit", "balance")],
+                    ui.label(f"{len(p.rows)} found · {len(p.new_rows)} new · {p.duplicate_count} already imported"
+                             + (f" · {skipped_before} skipped last time" if skipped_before else "")) \
+                        .classes("text-sm et-muted")
+                    with ui.row().classes("w-full items-center gap-2 mt-2"):
+                        summary = ui.label().classes("et-num text-sm")
+                        ui.space()
+                        if p.new_rows:
+                            ui.button("Tick all new", icon="done_all",
+                                      on_click=lambda: set_selection({r.fingerprint for r in p.new_rows})) \
+                                .props("flat dense no-caps")
+                        if payments:
+                            ui.button(f"Untick card bill payments ({len(payments)})", icon="remove_done",
+                                      on_click=lambda: set_selection(state["sel"] - payments)) \
+                                .props("flat dense no-caps") \
+                                .tooltip("Bill payments are usually already in your bank account's statement")
+                        import_btn = ui.button(icon="check", on_click=do_commit)
+                    ui.label("Unticked rows are remembered for this account and start unticked if they "
+                             "appear again.").classes("text-xs et-faint")
+                grid_box = ui.column().classes("w-full")
+            state["summary"], state["import_btn"], state["grid_box"] = summary, import_btn, grid_box
+            render_grid()
+            update_summary()
+
+        def render_grid() -> None:
+            p: ImportPreview = state["preview"]
+            box = state["grid_box"]
+            box.clear()
+            with box:
+                grid = ui.aggrid({
+                    "columnDefs": [
+                        {"field": "status", "width": 165},
+                        {"field": "date", "width": 125},
+                        {"field": "description", "flex": 1, "minWidth": 240, "tooltipField": "raw",
+                         "wrapText": True, "autoHeight": True},
+                        {"field": "type", "width": 130},
+                        {"field": "amount", "width": 130, "type": "rightAligned"},
+                    ],
                     "rowData": [{
-                        "status": "duplicate" if r.duplicate else "new",
+                        "fp": r.fingerprint,
+                        "status": "already imported" if r.duplicate else ("skipped before" if r.skipped_before
+                                                                          else "new"),
                         "date": r.txn.txn_date.isoformat(),
-                        "description": r.txn.description,
-                        "debit": fmt(r.txn.amount_minor) if r.txn.direction.value == "debit" else "",
-                        "credit": fmt(r.txn.amount_minor) if r.txn.direction.value == "credit" else "",
-                        "balance": fmt(r.txn.balance_minor),
+                        "description": narration.parse(r.txn.description).display,
+                        "raw": re.sub(r"\s+", " ", r.txn.description),
+                        "type": KIND_LABELS[default_kind(p.account, r.txn.direction, r.txn.description)],
+                        "amount": ("−" if r.txn.direction.value == "debit" else "+") + fmt(r.txn.amount_minor),
+                        "pre": r.fingerprint in state["sel"],
                     } for r in p.rows],
-                    ":rowClassRules": "{'opacity-40': p => p.data.status === 'duplicate'}",
-                }).classes("w-full h-96")
+                    ":getRowId": "p => p.data.fp",
+                    "rowSelection": {
+                        "mode": "multiRow", "checkboxes": True, "headerCheckbox": True,
+                        "hideDisabledCheckboxes": True,
+                        ":isRowSelectable": "n => n.data && n.data.status !== 'already imported'",
+                    },
+                    ":onFirstDataRendered": "p => { const nodes = []; p.api.forEachNode(n => n.data.pre && "
+                                            "nodes.push(n)); p.api.setNodesSelected({nodes, newValue: true}); }",
+                    ":rowClassRules": "{'opacity-40': p => p.data.status === 'already imported'}",
+                    "defaultColDef": {"sortable": True, "resizable": True},
+                }).classes("w-full").style("height: 28rem")
+
+                async def on_selection() -> None:
+                    state["sel"] = {r["fp"] for r in await grid.get_selected_rows()}
+                    update_summary()
+
+                grid.on("selectionChanged", on_selection)
+
+        def set_selection(fps: set[str]) -> None:
+            state["sel"] = set(fps)
+            render_grid()
+            update_summary()
+
+        def update_summary() -> None:
+            p: ImportPreview = state["preview"]
+            chosen = [r for r in p.new_rows if r.fingerprint in state["sel"]]
+            out = sum(r.txn.amount_minor for r in chosen if r.txn.direction.value == "debit")
+            inn = sum(r.txn.amount_minor for r in chosen if r.txn.direction.value == "credit")
+            state["summary"].text = (f"{len(chosen)} of {len(p.new_rows)} new selected"
+                                     + (f" · out {fmt(out)}" if out else "") + (f" · in {fmt(inn)}" if inn else ""))
+            btn = state["import_btn"]
+            btn.text = (f"Import {len(chosen)} transaction{'s' if len(chosen) != 1 else ''}" if chosen
+                        else "Save bill only")
+            # A card statement's bill summary is worth importing even with no rows ticked.
+            btn.set_enabled(bool(chosen) or p.statement.card_summary is not None)
 
         def do_commit() -> None:
-            batch = commit_import(state["preview"])
-            ui.notify(f"Imported {batch.rows_new} transactions ({batch.rows_duplicate} duplicates skipped)",
+            p: ImportPreview = state["preview"]
+            batch = commit_import(p, selected=state["sel"])
+            skipped = len(p.new_rows) - batch.rows_new
+            ui.notify(f"Imported {batch.rows_new} transactions"
+                      + (f", skipped {skipped}" if skipped else "")
+                      + (f", {batch.rows_duplicate} already imported" if batch.rows_duplicate else ""),
                       type="positive")
             result.clear()
 

@@ -64,7 +64,7 @@ def _sidebar(active: str) -> None:
 @contextmanager
 def frame(title: str, subtitle: str = ""):
     ui.dark_mode(True)
-    ui.colors(primary="#8b7cff", secondary="#3ccfe8", positive="#3dd68c", negative="#ff6b7a",
+    ui.colors(primary="#34e0a1", secondary="#0fb39b", positive="#3dd68c", negative="#ff6b7a",
               warning="#f5b84a", dark="#14161f", dark_page="#07080c")
     ui.add_head_html(FONTS)
     ui.add_css(THEME_CSS)

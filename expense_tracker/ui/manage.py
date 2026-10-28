@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from html import escape
 
 from nicegui import ui
@@ -11,8 +12,11 @@ from ..config import save_settings, settings
 from ..db import get_session
 from ..db.models import Account, AccountType, Frequency, Label
 from ..importers import parser_options
-from ..services import vault
+from ..services import narration, vault
+from ..services.importer import reapply_rule_types
+from ..services.money import fmt
 from ..services.accounts import delete_account, mask_account_number, save_account, usage_count
+from . import icons
 from .layout import frame
 
 
@@ -31,32 +35,30 @@ def accounts_page() -> None:
                 return
             formats = parser_options()
             for acc in rows:
-                is_card = acc.type == AccountType.credit_card
                 with ui.card().classes("w-full et-card-hover et-rise" + ("" if acc.active else " opacity-60")):
-                    with ui.row().classes("w-full items-center gap-4"):
-                        grad = ("linear-gradient(135deg,#3ccfe8,#2a9d8f)" if is_card
-                                else "linear-gradient(135deg,#8b7cff,#5b8cff)")
-                        with ui.element("div").classes("et-avatar").style(f"background:{grad};width:44px;height:44px"):
-                            ui.icon("credit_card" if is_card else "account_balance").classes("text-xl")
-                        with ui.column().classes("gap-0 min-w-56"):
-                            ui.label(acc.name).classes("font-semibold")
-                            ui.label(" · ".join(filter(None, [acc.institution, acc.number_masked]))) \
-                                .classes("text-xs et-muted")
-                        ui.label(formats.get(acc.parser_key, acc.parser_key)).classes("text-sm w-56")
-                        if acc.type == AccountType.credit_card:
-                            ui.label(f"Statement day {acc.statement_day or '-'} · due day {acc.due_day or '-'}") \
-                                .classes("text-sm")
-                        if not acc.active:
-                            ui.badge("inactive", color="grey")
-                        ui.space()
-                        if vault.has_password(acc.id):
-                            ui.button("Forget password", icon="key_off",
-                                      on_click=lambda acc=acc: (vault.forget_password(acc.id), listing.refresh())) \
-                                .props("flat dense no-caps").tooltip("Remove the saved statement password")
-                        ui.button(icon="edit", on_click=lambda acc=acc: account_dialog(acc)) \
-                            .props("flat round dense").tooltip("Edit")
-                        ui.button(icon="delete", on_click=lambda acc=acc: confirm_delete(acc)) \
-                            .props("flat round dense color=negative").tooltip("Delete")
+                    with ui.row().classes("w-full items-center gap-4 no-wrap"):
+                        ui.html(icons.tile_html(acc, 44), sanitize=False).classes("flex-none")
+                        # Text side can shrink and wrap; the buttons on the right never move.
+                        with ui.column().classes("gap-1 flex-1 min-w-0"):
+                            ui.label(acc.name).classes("font-semibold break-words")
+                            with ui.row().classes("gap-1.5 items-center flex-wrap"):
+                                for bubble in filter(None, [
+                                        acc.institution, acc.number_masked, formats.get(acc.parser_key, acc.parser_key),
+                                        f"Statement day {acc.statement_day or '–'} · due day {acc.due_day or '–'}"
+                                        if acc.type == AccountType.credit_card else ""]):
+                                    ui.label(bubble).classes("et-chip")
+                                if not acc.active:
+                                    ui.label("inactive").classes("et-chip warn")
+                        with ui.row().classes("flex-none items-center gap-1 no-wrap"):
+                            if vault.has_password(acc.id):
+                                ui.button("Forget password", icon="key_off",
+                                          on_click=lambda acc=acc: (vault.forget_password(acc.id),
+                                                                    listing.refresh())) \
+                                    .props("flat dense no-caps").tooltip("Remove the saved statement password")
+                            ui.button(icon="edit", on_click=lambda acc=acc: account_dialog(acc)) \
+                                .props("flat round dense color=grey-5").tooltip("Edit")
+                            ui.button(icon="delete", on_click=lambda acc=acc: confirm_delete(acc)) \
+                                .props("flat round dense color=negative").tooltip("Delete")
 
         def account_dialog(acc: Account | None) -> None:
             editing = acc is not None
@@ -83,6 +85,21 @@ def accounts_page() -> None:
                 number.on_value_change(update_preview)
                 parser = ui.select(parser_options(), value=acc.parser_key, label="Statement format") \
                     .classes("w-full")
+                with ui.row().classes("w-full items-center gap-3 no-wrap"):
+                    icon_preview = ui.html("", sanitize=False).classes("flex-none")
+                    icon = ui.select(icons.options(), value=acc.icon if acc.icon in icons.options() else "",
+                                     label="Icon").classes("flex-1")
+
+                def update_icon_preview() -> None:
+                    probe = Account(name=name.value or "", institution=inst.value or "",
+                                    type=AccountType(kind.value), icon=icon.value or "")
+                    icon_preview.content = icons.tile_html(probe, 40)
+
+                for field in (icon, name, inst, kind):
+                    field.on_value_change(update_icon_preview)
+                update_icon_preview()
+                ui.label(f"Add your own: put square SVG/PNG logos in {icons.USER_DIR}") \
+                    .classes("text-xs et-faint -mt-2 break-all")
                 with ui.row().classes("w-full gap-3") as card_fields:
                     st_day = ui.number("Statement day", value=acc.statement_day, min=1, max=31).classes("flex-1")
                     due_day = ui.number("Due day", value=acc.due_day, min=1, max=31).classes("flex-1")
@@ -95,7 +112,7 @@ def accounts_page() -> None:
                         return
                     is_card = kind.value == AccountType.credit_card.value
                     acc.name, acc.type, acc.institution = name.value, AccountType(kind.value), inst.value
-                    acc.parser_key, acc.active = parser.value, active.value
+                    acc.parser_key, acc.active, acc.icon = parser.value, active.value, icon.value or ""
                     acc.statement_day = int(st_day.value) if is_card and st_day.value else None
                     acc.due_day = int(due_day.value) if is_card and due_day.value else None
                     try:
@@ -205,3 +222,95 @@ def settings_page() -> None:
                           type="positive")
 
             ui.button("Save", on_click=save)
+
+        description_rules_card()
+
+
+def reapply_dialog() -> None:
+    """Preview, then apply, the rules' types on existing transactions."""
+    changes = reapply_rule_types(apply=False)
+    with ui.dialog() as dlg, ui.card().classes("w-[40rem]"):
+        ui.label("Re-apply types from rules").classes("text-lg font-medium")
+        ui.label("Only rows still at their default type change. Types you set yourself, or bills you linked, "
+                 "are kept.").classes("text-sm et-muted")
+        if not changes:
+            ui.label("Everything already matches the rules.").classes("py-4")
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Close", on_click=dlg.close).props("flat")
+        else:
+            with ui.column().classes("w-full gap-0 max-h-80 overflow-auto"):
+                for c in changes:
+                    with ui.row().classes("w-full items-center gap-3 no-wrap py-2") \
+                            .style("border-top: 1px solid var(--border)"):
+                        ui.label(f"{c.txn_date:%d %b %Y}").classes("text-xs et-faint w-20 flex-none")
+                        with ui.column().classes("gap-0 flex-1 min-w-0"):
+                            ui.label(narration.parse(c.description).display).classes("et-break text-sm")
+                            ui.label(c.account).classes("text-xs et-faint")
+                        ui.label(fmt(c.amount_minor)).classes("et-num text-sm flex-none")
+                        ui.label(f"{c.old.value} → {c.new.value}").classes("et-chip accent flex-none")
+
+            def apply() -> None:
+                n = len(reapply_rule_types(apply=True))
+                dlg.close()
+                ui.notify(f"Updated {n} transaction{'s' if n != 1 else ''}", type="positive")
+
+            with ui.row().classes("w-full justify-end"):
+                ui.button("Cancel", on_click=dlg.close).props("flat")
+                ui.button(f"Update {len(changes)}", icon="check", on_click=apply)
+    dlg.open()
+
+
+def description_rules_card() -> None:
+    with ui.card().classes("w-full max-w-3xl"):
+        ui.label("Description rules").classes("font-medium")
+        ui.label("Regex rules that turn raw bank text (like SBI's 'WDL TFR UPI/DR/…') into a clean name with "
+                 "details, and set the type on import. Edit your copy in any text editor; changes apply on the "
+                 "next page load.").classes("text-sm et-muted")
+
+        @ui.refreshable
+        def status() -> None:
+            path = narration.rules_path()
+            mine = path == narration.USER_RULES
+            with ui.row().classes("items-center gap-2 no-wrap w-full"):
+                ui.label("Your copy" if mine else "Built-in defaults").classes("et-chip accent" if mine else "et-chip")
+                ui.label(str(path)).classes("text-xs et-faint et-break")
+            if err := narration.rules_error():
+                ui.label(f"Your rules file has an error, so the defaults are in use: {err}").classes("text-sm et-neg")
+            with ui.row().classes("gap-2"):
+                if not mine:
+                    ui.button("Create my copy", icon="content_copy",
+                              on_click=lambda: (narration.create_user_copy(), status.refresh(),
+                                                ui.notify("Created. Edit it, then reload this page.",
+                                                          type="positive")))
+                ui.button("Open folder", icon="folder_open",
+                          on_click=lambda: os.startfile(narration.rules_path().parent)).props("outline")
+                ui.button("Re-apply types…", icon="published_with_changes", on_click=reapply_dialog) \
+                    .props("outline").tooltip("Update existing transactions after changing rules")
+
+        status()
+
+        ui.label("Try a description").classes("text-sm font-medium mt-2")
+        sample = ui.textarea(placeholder="Paste a description from a statement").classes("w-full") \
+            .props("outlined autogrow")
+        result = ui.column().classes("w-full gap-1")
+
+        def test() -> None:
+            result.clear()
+            if not sample.value:
+                return
+            n = narration.parse(sample.value)
+            with result:
+                if n.parsed:
+                    ui.label(n.title).classes("font-semibold")
+                    with ui.row().classes("gap-1.5 flex-wrap"):
+                        for chip in [n.method, *n.details, f"ref {n.ref}" if n.ref else ""]:
+                            if chip:
+                                ui.label(chip).classes("et-chip et-break")
+                    ui.label(f"Matched rule: {n.rule}").classes("text-xs et-faint")
+                else:
+                    ui.label(n.text).classes("et-muted et-break")
+                    ui.label("No rule matched: shown as plain text with bubbles.").classes("text-xs et-warn")
+                if n.kind:
+                    ui.label(f"Type on import: {n.kind}").classes("text-xs et-faint")
+
+        sample.on_value_change(test)

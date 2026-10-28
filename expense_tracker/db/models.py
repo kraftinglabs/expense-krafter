@@ -60,6 +60,8 @@ class Account(SQLModel, table=True):
     # rest is replaced with X before it ever reaches the DB.
     number_masked: str = ""
     parser_key: str = "generic_excel"
+    # Bank icon key ("" = pick automatically from the bank name, "generic" = none).
+    icon: str = ""
     # Credit cards only: day of month the statement is generated / payment is due.
     statement_day: Optional[int] = None
     due_day: Optional[int] = None
@@ -114,11 +116,26 @@ class Transaction(SQLModel, table=True):
     fingerprint: str = Field(index=True)
 
     kind: TxnKind = TxnKind.expense
+    # True once you set the type yourself; re-applying rules never overrides it.
+    kind_manual: bool = False
     label_id: Optional[int] = Field(default=None, foreign_key="label.id")
     group_id: Optional[int] = Field(default=None, foreign_key="expensegroup.id")
     # Card transactions: the statement they were billed on.
     cc_statement_id: Optional[int] = Field(default=None, foreign_key="ccstatement.id")
     notes: str = ""
+
+
+class SkippedRow(SQLModel, table=True):
+    """A statement row you unticked on import. When it turns up again (an
+    overlapping export, or a card statement repeating a payment) it starts
+    unticked."""
+
+    __table_args__ = (UniqueConstraint("account_id", "fingerprint"),)
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    account_id: int = Field(foreign_key="account.id", index=True)
+    fingerprint: str
+    skipped_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
 
 
 class CCStatement(SQLModel, table=True):

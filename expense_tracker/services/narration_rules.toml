@@ -1,0 +1,212 @@
+# How raw bank descriptions are turned into readable rows.
+#
+# Edit your own copy (Settings → Description rules → "Create my copy"); the app
+# reloads it automatically when the file changes. Patterns are Python regular
+# expressions, case-insensitive. Use '...' or '''...''' strings so backslashes
+# need no escaping.
+#
+#   [[cleanup]]  regex replacements applied to every description first, in order.
+#   [[rule]]     tried in order against the cleaned text (or the raw text with
+#                match_on = "raw").
+#                - The first rule with a `title` decides how the row is shown.
+#                - The first rule with a `kind` sets the type on import
+#                  (cc_payment, income, transfer, ...). A rule can have both.
+#                Templates use the pattern's named groups: "{name}". Filters can
+#                be chained: "{name|company|title}". Filters: title, upper, lower,
+#                bank (bank code → name), note (drops empty/boilerplate remarks),
+#                company (drops Pvt Ltd / Limited / LLP), autopay (any text → "Auto-pay").
+#                `title` may be a list: the first non-empty one wins.
+#                Empty `details` entries are dropped.
+#   Nothing matched → the cleaned text is shown as is, with bubbles after it.
+
+# ---------------------------------------------------------------- cleanup
+
+[[cleanup]]
+name = "Join SBI line wraps (they split words: 'paytm.d19⏎ 7')"
+pattern = '\r?\n ?'
+replace = ''
+
+[[cleanup]]
+name = "Drop the SBI branch trailer ('0097691162095 AT 12345 MG ROAD')"
+pattern = '\s{2,}\d{6,}\s+AT\s+\d+\s+.*$'
+replace = ''
+
+[[cleanup]]
+name = "Drop the SBI ' AT <branch no> <branch>' trailer when no code precedes it"
+pattern = '\s+AT\s+\d{4,}\s+[A-Z][A-Z .]*$'
+replace = ''
+
+[[cleanup]]
+name = "Drop the SBI WDL/DEP TFR prefix"
+pattern = '^(WDL|DEP)\s+(TFR|CSH|CHQ|CLG)\s+'
+replace = ''
+
+[[cleanup]]
+name = "Collapse runs of spaces"
+pattern = '\s{2,}'
+replace = '  '
+
+# ---------------------------------------------------------------- type rules
+
+[[rule]]
+name = "Credit card bill payments (not spend: the card purchases are)"
+pattern = '''(?:\b(?:cc|credit\s*card)|card)\b.*\b(?:pay(?:ments?)?|bill|dues?)\b|\b(?:pay(?:ment)?|bill)\b.*\bcredit\s*card\b|\bcred\s*club\b|\bbilldesk\b.*card'''
+kind = "cc_payment"
+
+# ---------------------------------------------------------------- SBI
+
+[[rule]]
+name = "SBI card bill via net banking"
+pattern = '^INB\s+SBI\s*CARD'
+title = "SBI Card bill payment"
+method = "Net banking"
+details = ["via BillDesk"]
+
+[[rule]]
+name = "SBI UPI  (UPI/DR|CR/<ref>/<name, 8 chars>/<bank>/<UPI id>/<remark>)"
+pattern = '''UPI/(?P<dir>DR|CR)/(?P<ref>\d+)/(?P<name>[^/]*)/(?P<bank>[^/]*)/(?P<upi_id>[^/]*)(?:/(?P<note>.*))?'''
+title = ["{name|title}", "{upi_id}", "UPI payment"]
+method = "UPI"
+details = ["{upi_id}", "{bank|bank}", "{note|note}"]
+ref = "{ref}"
+
+[[rule]]
+name = "NEFT / RTGS / IMPS with stars  (NEFT*<IFSC>*<UTR>*<name>)"
+pattern = '(?P<rail>NEFT|RTGS|IMPS)\*(?P<ifsc>[^*]*)\*(?P<ref>[^*]*)\*(?P<name>[^*]*)'
+title = ["{name|title}", "{rail|upper} transfer"]
+method = "{rail|upper}"
+details = ["{ifsc|bank}"]
+ref = "{ref}"
+
+[[rule]]
+name = "Net banking  (INB <what>  <more>)"
+pattern = '^INB\s+(?P<what>.+?)(?:\s{2,}(?P<more>.*))?$'
+title = "{what|title}"
+method = "Net banking"
+details = ["{more}"]
+
+[[rule]]
+name = "SBI bulk ACH credit, e.g. dividends  (CEMTEX DEP ACHCr <sponsor+ref> <company>)"
+pattern = '^CEMTEX\s+DEP\s+ACH\s*CR\s+(?P<ref>[A-Z]{4}\d+)\s*(?P<name>.+)$'
+title = "{name|title}"
+method = "ACH credit"
+ref = "{ref}"
+
+[[rule]]
+name = "SBI transfer to own deposit account (assumed)  (FIRDFTFRREF:<ref> ... OF <holder>)"
+pattern = '^FIRDFTFRREF:(?P<ref>\S+)'
+title = "Own-account transfer"
+method = "Transfer"
+details = ["ref {ref}"]
+kind = "transfer"
+
+[[rule]]
+name = "ATM / cash withdrawal"
+match_on = "raw"
+pattern = '^WDL\s+(?:CSH\b|.*\bATM\b)'
+title = "Cash withdrawal"
+method = "Cash"
+
+[[rule]]
+name = "Cash deposit"
+match_on = "raw"
+pattern = '^DEP\s+CSH\b'
+title = "Cash deposit"
+method = "Cash"
+
+[[rule]]
+name = "Interest credited"
+pattern = '\bINT(?:EREST)?\.?\s*(?:PD|PAID|CREDIT|CR)\b|^INTEREST'
+title = "Interest"
+method = "Interest"
+kind = "income"
+
+# ---------------------------------------------------------------- SBI Card statements
+
+[[rule]]
+name = "SBI Card payment received  (PAYMENT RECEIVED <ref>)"
+pattern = '^PAYMENT RECEIVED\b\s*(?P<ref>\S*)'
+title = "Payment received"
+method = "Card bill"
+ref = "{ref}"
+
+[[rule]]
+name = "SBI Card purchase  ([WWW] <merchant> [SI] <city> IN [(note)])"
+pattern = '''^(?:WWW\s+)?(?P<name>.+?)(?:\s+(?P<si>SI))?\s+(?P<city>NEW DELHI|NAVI MUMBAI|[A-Za-z]+)\s+IN(?:\s+\((?P<note>[^)]*)\))?$'''
+title = "{name|company|title}"
+method = "Card"
+details = ["{city|title}", "{si|autopay}", "{note}"]
+
+# ---------------------------------------------------------------- other banks
+
+[[rule]]
+name = "UPI with dashes  (UPI-<name>-<UPI id>-...)"
+pattern = '^UPI-(?P<name>[^-]+)-(?P<upi_id>[^-\s]+)'
+title = "{name|title}"
+method = "UPI"
+details = ["{upi_id}"]
+
+[[rule]]
+name = "Card swipe  (POS <card> <merchant>)"
+pattern = '^POS\s+\S+\s+(?P<name>.+)$'
+title = "{name|title}"
+method = "Card"
+
+[[rule]]
+name = "NEFT / IMPS with dashes  (NEFT-<name> <ref>)"
+pattern = '^(?P<rail>NEFT|IMPS|RTGS)-(?P<name>.+?)(?:\s+\d+)?$'
+title = "{name|title}"
+method = "{rail|upper}"
+
+# ---------------------------------------------------------------- lookups
+
+[title]
+# Words the `title` filter keeps in capitals instead of 'Capitalising' them.
+keep_upper = ["SBI", "HDFC", "ICICI", "IDFC", "RBL", "UPI", "ATM", "EMI", "LIC", "IRCTC", "BSNL", "PVR",
+              "HP", "HPCL", "BPCL", "IOCL", "DMRC", "KFC", "BWW", "UPS", "DHL", "GST", "NEFT", "IMPS", "RTGS"]
+
+[notes]
+# Remarks that carry no information (SBI keeps only ~4 characters anyway).
+ignore = ["NO R", "NO REMARKS", "UPI", "SENT", "PAY", "PAYM", "PAYMENT", "NA", "NULL"]
+min_length = 5
+
+[banks]
+# First 4 letters of an IFSC / UPI bank code → display name.
+SBIN = "SBI"
+HDFC = "HDFC"
+ICIC = "ICICI"
+UTIB = "Axis"
+KKBK = "Kotak"
+YESB = "Yes Bank"
+FDRL = "Federal"
+PUNB = "PNB"
+BARB = "Bank of Baroda"
+CNRB = "Canara"
+UBIN = "Union Bank"
+IDIB = "Indian Bank"
+IOBA = "IOB"
+INDB = "IndusInd"
+IDFB = "IDFC First"
+AIRP = "Airtel Payments"
+PYTM = "Paytm Payments"
+HSBC = "HSBC"
+SCBL = "Standard Chartered"
+CITI = "Citi"
+RATN = "RBL"
+AUBL = "AU Small Finance"
+BKID = "Bank of India"
+MAHB = "Bank of Maharashtra"
+UCBA = "UCO"
+CBIN = "Central Bank"
+IBKL = "IDBI"
+KARB = "Karnataka Bank"
+KVBL = "Karur Vysya"
+TMBL = "TMB"
+SIBL = "South Indian"
+CSBK = "CSB"
+DBSS = "DBS"
+JAKA = "J&K Bank"
+ESFB = "Equitas"
+USFB = "Ujjivan"
+FINO = "Fino Payments"
+JIOP = "Jio Payments"

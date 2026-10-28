@@ -25,6 +25,14 @@ class MemoryKeyring(KeyringBackend):
 
 
 @pytest.fixture(autouse=True)
+def default_narration_rules(tmp_path, monkeypatch):
+    """Ignore any personal rules copy in the real config dir."""
+    from expense_tracker.services import narration
+
+    monkeypatch.setattr(narration, "USER_RULES", tmp_path / "no-user-rules.toml")
+
+
+@pytest.fixture(autouse=True)
 def memory_keyring():
     previous = keyring.get_keyring()
     backend = MemoryKeyring()

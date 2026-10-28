@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date
 from html import escape
 from itertools import groupby
@@ -9,9 +10,10 @@ from itertools import groupby
 from nicegui import ui
 
 from ..db.models import Direction, TxnKind
-from ..services import ledger
+from ..services import ledger, narration
 from ..services.analytics import merchant_name
 from ..services.money import fmt
+from . import icons
 from .layout import frame
 
 KIND_LABELS = {
@@ -74,41 +76,55 @@ def transactions_page() -> None:
         label_options = {lab.id: lab.name for lab in labels}
         label_color = {lab.id: lab.color for lab in labels}
 
+        all_accounts = {a.id: a for a in ledger.accounts(active_only=False)}
+
+        def bubbles(t: ledger.TxnRow, n: narration.Narration) -> None:
+            """Second line: parsed facts first, then account / group / notes."""
+            with ui.row().classes("gap-1.5 items-center flex-wrap min-w-0"):
+                if n.method:
+                    ui.label(n.method).classes("et-chip font-semibold").style("color: var(--text)")
+                for detail in n.details:
+                    ui.label(detail).classes("et-chip et-break")
+                if acc := all_accounts.get(t.account_id):
+                    ui.html(f'<span class="et-chip">{icons.tile_html(acc, 14)}{escape(acc.name)}</span>',
+                            sanitize=False)
+                if t.group_name:
+                    ui.html(f'<span class="et-chip accent">{escape(t.group_name)}</span>', sanitize=False) \
+                        .tooltip("Grouped expense")
+                if t.notes:
+                    ui.label(f"“{t.notes}”").classes("text-xs et-muted italic et-break")
+
         def txn_row(t: ledger.TxnRow) -> None:
+            n = narration.parse(t.description)
             with ui.row().classes("w-full items-center gap-4 et-row no-wrap"):
                 ui.checkbox(value=t.id in state["selected"], on_change=lambda e, i=t.id: toggle(i, e.value)) \
-                    .props("dense")
+                    .props("dense").classes("flex-none")
                 _avatar(t.description, label_color.get(t.label_id))
-                with ui.column().classes("gap-0 flex-1 min-w-0"):
-                    ui.label(merchant_name(t.description)).classes("font-medium truncate")
-                    with ui.row().classes("gap-2 items-center no-wrap min-w-0"):
-                        ui.label(t.description).classes("text-xs et-faint truncate").tooltip(t.description)
-                        ui.label("·").classes("text-xs et-faint")
-                        ui.label(t.account).classes("text-xs et-faint whitespace-nowrap")
-                        if t.group_name:
-                            ui.html(f'<span class="et-chip accent">{escape(t.group_name)}</span>', sanitize=False) \
-                                .tooltip("Grouped expense")
-                        if t.notes:
-                            ui.label(f"“{t.notes}”").classes("text-xs et-muted italic truncate")
+                # Text column shrinks and wraps; the controls on the right keep their width.
+                with ui.column().classes("gap-1 flex-1 min-w-0"):
+                    ui.label(n.display).classes("et-break" + (" font-medium" if n.parsed else " text-sm et-muted")) \
+                        .tooltip(re.sub(r"\s+", " ", t.description))
+                    bubbles(t, n)
 
-                ui.button(icon="sticky_note_2" if t.notes else "edit_note",
-                          on_click=lambda t=t: notes_dialog(t)) \
-                    .props(f"flat round dense size=sm color={'primary' if t.notes else 'grey-7'}") \
-                    .tooltip("Notes")
-                ui.select({k.value: v for k, v in KIND_LABELS.items()}, value=t.kind.value,
-                          on_change=lambda e, i=t.id: ledger.set_fields(i, kind=e.value)) \
-                    .props("dense outlined options-dense").classes("w-36")
+                with ui.row().classes("flex-none items-center gap-3 no-wrap"):
+                    ui.button(icon="sticky_note_2" if t.notes else "edit_note",
+                              on_click=lambda t=t: notes_dialog(t)) \
+                        .props(f"flat round dense size=sm color={'primary' if t.notes else 'grey-7'}") \
+                        .tooltip("Notes")
+                    ui.select({k.value: v for k, v in KIND_LABELS.items()}, value=t.kind.value,
+                              on_change=lambda e, i=t.id: ledger.set_fields(i, kind=e.value)) \
+                        .props("dense outlined options-dense").classes("w-36")
 
-                def on_label(e, i=t.id) -> None:
-                    ledger.set_fields(i, label_id=e.value)
-                    e.sender.style(f"border-left: 4px solid {label_color.get(e.value, 'transparent')}")
+                    def on_label(e, i=t.id) -> None:
+                        ledger.set_fields(i, label_id=e.value)
+                        e.sender.style(f"border-left: 4px solid {label_color.get(e.value, 'transparent')}")
 
-                ui.select(label_options, value=t.label_id, with_input=True, clearable=True,
-                          label=None if t.label_id else "Label", on_change=on_label) \
-                    .props("dense outlined options-dense").classes("w-48") \
-                    .style(f"border-left: 4px solid {label_color.get(t.label_id, 'transparent')}")
-                text, color = _amount(t.amount_minor, t.direction)
-                ui.label(text).classes(f"w-32 text-right font-semibold et-num {color}")
+                    ui.select(label_options, value=t.label_id, with_input=True, clearable=True,
+                              label=None if t.label_id else "Label", on_change=on_label) \
+                        .props("dense outlined options-dense").classes("w-48") \
+                        .style(f"border-left: 4px solid {label_color.get(t.label_id, 'transparent')}")
+                    text, color = _amount(t.amount_minor, t.direction)
+                    ui.label(text).classes(f"w-28 text-right font-semibold et-num {color}")
 
         def month_body(month: str, container: ui.element) -> None:
             container.clear()

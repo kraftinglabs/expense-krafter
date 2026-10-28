@@ -37,6 +37,7 @@ class TxnRow:
     group_id: int | None
     group_name: str
     notes: str
+    account_id: int = 0
 
 
 @dataclass
@@ -92,7 +93,7 @@ def month_transactions(month: str, account_id: int | None = None,
         rows = s.exec(_filtered(q, account_id, unlabelled_only)
                       .order_by(col(Transaction.txn_date).desc(), Transaction.id)).all()
     return [TxnRow(t.id, t.txn_date, acc, t.description, t.amount_minor, t.direction, t.kind, t.label_id,
-                   t.group_id, grp or "", t.notes) for t, acc, grp in rows]
+                   t.group_id, grp or "", t.notes, t.account_id) for t, acc, grp in rows]
 
 
 def set_fields(txn_id: int, **fields) -> None:
@@ -104,6 +105,8 @@ def set_fields(txn_id: int, **fields) -> None:
         t = s.get(Transaction, txn_id)
         for k, v in fields.items():
             setattr(t, k, TxnKind(v) if k == "kind" else v)
+        if "kind" in fields:
+            t.kind_manual = True
         s.add(t)
         s.commit()
 

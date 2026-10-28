@@ -16,7 +16,8 @@ PERIODS = {"this_month": "This month", "last_month": "Last month", "3m": "Last 3
            "6m": "Last 6 months", "12m": "Last 12 months", "ytd": "This year", "all": "All time"}
 PERIOD_SHORT = {"this_month": "This month", "last_month": "Last month", "3m": "3M", "6m": "6M",
                 "12m": "12M", "ytd": "YTD", "all": "All"}
-ACCENT = "#8b7cff"         # single-series bars / "this month"
+ACCENT = "#34e0a1"         # thin lines / "this month"
+BAR_GREEN = "#1d9e74"      # filled single-series bars: deeper so they do not outshine the hero
 BASELINE_GRAY = "#5d6378"  # comparison series
 SURFACE = "#12141c"        # gap between stacked segments
 GRID = "rgba(255,255,255,0.06)"
@@ -72,14 +73,14 @@ def _sparkline(values: list[float], width: int = 260, height: int = 56) -> str:
     return (
         f'<svg width="100%" height="{height}" viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
         '<defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">'
-        '<stop offset="0" stop-color="#8b7cff" stop-opacity="0.45"/>'
-        '<stop offset="1" stop-color="#8b7cff" stop-opacity="0"/></linearGradient>'
+        '<stop offset="0" stop-color="#34e0a1" stop-opacity="0.40"/>'
+        '<stop offset="1" stop-color="#34e0a1" stop-opacity="0"/></linearGradient>'
         '<linearGradient id="sl" x1="0" y1="0" x2="1" y2="0">'
-        '<stop offset="0" stop-color="#8b7cff"/><stop offset="1" stop-color="#3ccfe8"/></linearGradient></defs>'
+        '<stop offset="0" stop-color="#0fb39b"/><stop offset="1" stop-color="#8af8c8"/></linearGradient></defs>'
         f'<polygon points="{area}" fill="url(#sg)"/>'
         f'<polyline points="{line}" fill="none" stroke="url(#sl)" stroke-width="2" '
         'stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>'
-        f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="3.5" fill="#3ccfe8"/></svg>'
+        f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="3.5" fill="#8af8c8"/></svg>'
     )
 
 
@@ -194,7 +195,7 @@ def month_pace(account_id: int | None) -> None:
             is_this = name == "This month"
             fig.add_scatter(x=cum.index, y=cum.values, name=name, mode="lines",
                             line=dict(color=color, width=2.5 if is_this else 2, dash=dash, shape="hv"),
-                            fill="tozeroy" if is_this else None, fillcolor="rgba(139,124,255,0.12)",
+                            fill="tozeroy" if is_this else None, fillcolor="rgba(52,224,161,0.12)",
                             hovertemplate=f"{name}, day %{{x}}: ₹%{{y:,.0f}}<extra></extra>")
             fig.add_annotation(x=cum.index[-1], y=cum.values[-1], text=f"{name} {_rupees(cum.values[-1])}",
                                showarrow=False, xanchor="left", xshift=6, font=dict(size=11, color=TEXT_MUTED))
@@ -211,7 +212,7 @@ def top_merchants(df: pd.DataFrame, n: int = 10) -> None:
         top = (df.groupby("merchant").agg(amount=("amount", "sum"), count=("amount", "size"))
                  .sort_values("amount", ascending=False).head(n).iloc[::-1])
         fig = go.Figure(go.Bar(
-            x=top["amount"], y=top.index, orientation="h", marker_color=ACCENT,
+            x=top["amount"], y=top.index, orientation="h", marker_color=BAR_GREEN,
             customdata=top["count"], text=top["amount"].map(_rupees), textposition="outside", cliponaxis=False,
             hovertemplate="<b>%{y}</b><br>₹%{x:,.0f} over %{customdata} payments<extra></extra>",
         ))
@@ -228,7 +229,7 @@ def by_account(df: pd.DataFrame) -> None:
             return _empty()
         totals = df.groupby("account")["amount"].sum().sort_values()
         fig = go.Figure(go.Bar(
-            x=totals.values, y=totals.index, orientation="h", marker_color=ACCENT,
+            x=totals.values, y=totals.index, orientation="h", marker_color=BAR_GREEN,
             text=[_rupees(v) for v in totals.values], textposition="outside", cliponaxis=False,
             hovertemplate="<b>%{y}</b><br>₹%{x:,.0f}<extra></extra>",
         ))
@@ -270,7 +271,7 @@ def dashboard_page() -> None:
         with ui.row().classes("w-full items-center gap-4"):
             ui.toggle(PERIOD_SHORT, value=state["period"],
                       on_change=lambda e: (state.update(period=e.value), content.refresh())) \
-                .props("unelevated rounded no-caps toggle-color=primary color=transparent text-color=grey-5 "
+                .props("unelevated rounded no-caps toggle-color=primary toggle-text-color=dark color=transparent text-color=grey-5 "
                        "padding='6px 14px'").classes("et-card")
             ui.space()
             ui.select({None: "All accounts"} | accounts, value=None,

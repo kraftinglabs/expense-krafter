@@ -2,15 +2,15 @@ from datetime import date
 
 from expense_tracker.db.models import Account, AccountType, Direction, TxnKind
 from expense_tracker.services.analytics import merchant_name, period_for
-from expense_tracker.services.importer import _default_kind
+from expense_tracker.services.importer import default_kind
 
 
 def test_card_bill_payments_are_not_spend():
     bank = Account(name="b", type=AccountType.bank)
     for desc in ("ICICI CC PAYMENT", "BIL/ONL/HDFC CREDIT CARD BILL", "CRED CLUB UPI", "PAYMENT TO CREDIT CARD 4321"):
-        assert _default_kind(bank, Direction.debit, desc) == TxnKind.cc_payment, desc
+        assert default_kind(bank, Direction.debit, desc) == TxnKind.cc_payment, desc
     for desc in ("UPI-SWIGGY", "POS 1234XXXX AMAZON", "CARDAMOM RESTAURANT"):
-        assert _default_kind(bank, Direction.debit, desc) == TxnKind.expense, desc
+        assert default_kind(bank, Direction.debit, desc) == TxnKind.expense, desc
 
 
 def test_merchant_name_strips_payment_noise():
