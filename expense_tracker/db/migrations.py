@@ -48,11 +48,26 @@ def _m004_kind_manual(conn: Connection) -> None:
         conn.exec_driver_sql('ALTER TABLE "transaction" ADD COLUMN kind_manual BOOLEAN NOT NULL DEFAULT 0')
 
 
+def _m005_label_interval(conn: Connection) -> None:
+    """label.frequency (monthly/quarterly/yearly) -> label.every + label.unit,
+    so any interval can be set (weekly, half-yearly, every 2 months...)."""
+    cols = _columns(conn, "label")
+    if "every" not in cols:
+        conn.exec_driver_sql("ALTER TABLE label ADD COLUMN every INTEGER")
+    if "unit" not in cols:
+        conn.exec_driver_sql("ALTER TABLE label ADD COLUMN unit VARCHAR(5)")
+    if "frequency" in cols:
+        for freq, every, unit in (("monthly", 1, "month"), ("quarterly", 3, "month"), ("yearly", 1, "year")):
+            conn.exec_driver_sql("UPDATE label SET every = ?, unit = ? WHERE frequency = ?", (every, unit, freq))
+        conn.exec_driver_sql("ALTER TABLE label DROP COLUMN frequency")
+
+
 MIGRATIONS = [
     _m001_mask_account_number,
     _m002_database_id,
     _m003_account_icon,
     _m004_kind_manual,
+    _m005_label_interval,
 ]
 
 

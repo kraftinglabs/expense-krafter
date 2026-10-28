@@ -4,7 +4,7 @@ from datetime import date
 import pytest
 
 from expense_tracker.db import get_session, init_db
-from expense_tracker.db.models import Account, AccountType, Direction, Frequency, Label, Transaction
+from expense_tracker.db.models import Account, AccountType, Direction, IntervalUnit, Label, Transaction
 from expense_tracker.services import labels
 
 
@@ -23,12 +23,24 @@ def test_new_labels_get_unused_palette_colours():
 def test_edit_changes_name_colour_and_recurrence():
     lab = labels.create_label("Subs")
     lab = labels.update_label(lab.id, name="Subscriptions", color="#123456", recurring=True,
-                              frequency=Frequency.monthly)
-    assert (lab.name, lab.color, lab.is_recurring, lab.frequency) == ("Subscriptions", "#123456", True,
-                                                                     Frequency.monthly)
+                              every=6, unit=IntervalUnit.month)
+    assert (lab.name, lab.color, lab.is_recurring, lab.every, lab.unit) == ("Subscriptions", "#123456", True,
+                                                                           6, IntervalUnit.month)
     lab = labels.update_label(lab.id, name="Subscriptions", color="#123456", recurring=False,
-                              frequency=Frequency.monthly)
-    assert lab.frequency is None  # not recurring -> no frequency
+                              every=6, unit=IntervalUnit.month)
+    assert (lab.every, lab.unit) == (None, None)  # not recurring -> no interval
+    with pytest.raises(ValueError):
+        labels.update_label(lab.id, name="Subscriptions", color="#123456", recurring=True, every=0)
+
+
+def test_interval_names_and_yearly_count():
+    assert labels.interval_name(6, IntervalUnit.month) == "Half-yearly"
+    assert labels.interval_name(1, IntervalUnit.week) == "Weekly"
+    assert labels.interval_name(2, IntervalUnit.week) == "Every 2 weeks"
+    assert labels.interval_name(18, IntervalUnit.month) == "Every 18 months"
+    assert labels.times_per_year(6, IntervalUnit.month) == 2
+    assert labels.times_per_year(2, IntervalUnit.week) == 26
+    assert labels.times_per_year(2, IntervalUnit.year) == 0.5
 
 
 def test_names_must_be_unique_ignoring_case():
@@ -37,7 +49,7 @@ def test_names_must_be_unique_ignoring_case():
         labels.create_label("food")
     other = labels.create_label("Fuel")
     with pytest.raises(ValueError):
-        labels.update_label(other.id, name="FOOD", color="#000000", recurring=False, frequency=None)
+        labels.update_label(other.id, name="FOOD", color="#000000", recurring=False)
 
 
 def test_used_labels_cannot_be_deleted():

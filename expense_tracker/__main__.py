@@ -10,7 +10,7 @@ from sqlmodel import select
 
 from .config import override_data_dir, settings
 from .db import get_session, init_db
-from .db.models import Frequency, Label
+from .db.models import IntervalUnit, Label
 from .db.session import acquire_lock, backup_db, release_lock
 from .services.notify import send_due_notifications
 from .ui import layout
@@ -29,7 +29,8 @@ def seed_labels() -> None:
         if s.exec(select(Label)).first():
             return
         s.add_all(Label(name=n, color=c) for n, c in DEFAULT_LABELS)
-        s.add(Label(name="Subscriptions", color="#8e6c8a", is_recurring=True, frequency=Frequency.monthly))
+        s.add(Label(name="Subscriptions", color="#8e6c8a", is_recurring=True, every=1,
+                    unit=IntervalUnit.month))
         s.commit()
 
 

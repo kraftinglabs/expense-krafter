@@ -9,7 +9,7 @@ from sqlmodel import select
 
 from ..config import save_settings, settings
 from ..db import get_session
-from ..db.models import Account, AccountType, Frequency, Label
+from ..db.models import Account, AccountType, IntervalUnit, Label
 from ..importers import parser_options
 from ..services import labels, narration, vault
 from ..services.importer import reapply_rule_types
@@ -154,10 +154,35 @@ def accounts_page() -> None:
         listing()
 
 
+CUSTOM = "Custom…"
+UNITS = {u.value: f"{u.value}s" for u in IntervalUnit}
+
+
+def interval_picker(every: int | None = 1, unit: IntervalUnit | None = IntervalUnit.month):
+    """A preset select (Weekly ... Yearly) plus 'Custom…' for every N weeks /
+    months / years. Returns a function giving the chosen (every, unit)."""
+    current = (every or 1, IntervalUnit(unit or IntervalUnit.month))
+    name = labels.interval_name(*current)
+    with ui.row().classes("items-end gap-2 no-wrap") as row:
+        preset = ui.select(list(labels.PRESETS) + [CUSTOM], value=name if name in labels.PRESETS else CUSTOM)             .props("outlined dense").classes("w-40")
+        with ui.row().classes("items-end gap-2 no-wrap") as custom:
+            ui.label("every").classes("et-muted text-sm pb-2")
+            count = ui.number(value=current[0], min=1, max=520, step=1, format="%d")                 .props("outlined dense").classes("w-20")
+            unit_sel = ui.select(UNITS, value=current[1].value).props("outlined dense").classes("w-28")
+        custom.bind_visibility_from(preset, "value", backward=lambda v: v == CUSTOM)
+
+    def value() -> tuple[int, IntervalUnit]:
+        if preset.value != CUSTOM:
+            return labels.PRESETS[preset.value]
+        return int(count.value or 1), IntervalUnit(unit_sel.value)
+
+    value.row = row
+    return value
+
+
 @ui.page("/labels")
 def labels_page() -> None:
     with frame("Labels", "Categories for your spending; recurring ones power the subscriptions view"):
-        frequencies = {f.value: f.value.capitalize() for f in Frequency}
 
         with ui.card().classes("w-full"):
             ui.label("Add label").classes("et-card-title")
@@ -165,13 +190,12 @@ def labels_page() -> None:
             with ui.row().classes("items-end gap-3 mt-2"):
                 name = ui.input("Name").classes("w-56").props("outlined dense")
                 recurring = ui.checkbox("Recurring")
-                freq = ui.select(frequencies, value="monthly").props("outlined dense").classes("w-36")
-                freq.bind_visibility_from(recurring, "value")
+                interval = interval_picker()
+                interval.row.bind_visibility_from(recurring, "value")
 
                 def add() -> None:
                     try:
-                        lab = labels.create_label(name.value, recurring.value,
-                                                  Frequency(freq.value) if recurring.value else None)
+                        lab = labels.create_label(name.value, recurring.value, *interval())
                     except ValueError as exc:
                         ui.notify(str(exc), type="warning")
                         return
@@ -197,8 +221,8 @@ def labels_page() -> None:
                         ui.html(f'<span class="et-dot" style="width:12px;height:12px;background:{lab.color}"></span>',
                                 sanitize=False).classes("flex-none")
                         ui.label(lab.name).classes("flex-1 min-w-0 et-break")
-                        if lab.is_recurring and lab.frequency:
-                            ui.label(f"Recurring · {lab.frequency.value}").classes("et-chip flex-none")
+                        if lab.is_recurring:
+                            ui.label(f"Recurring · {labels.interval_name(lab.every, lab.unit).lower()}")                                 .classes("et-chip flex-none")
                         ui.label(f"{used} transaction{'s' if used != 1 else ''}" if used else "Unused") \
                             .classes("text-sm et-faint et-num w-28 text-right flex-none")
                         with ui.row().classes("flex-none gap-1 no-wrap"):
@@ -226,15 +250,14 @@ def labels_page() -> None:
                             f"width:22px;height:22px;border-radius:3px;background:{c}") \
                             .on("click", lambda c=c: e_color.set_value(c)).tooltip(c)
                 e_rec = ui.checkbox("Recurring", value=lab.is_recurring)
-                e_freq = ui.select(frequencies, value=(lab.frequency or Frequency.monthly).value) \
-                    .props("outlined dense").classes("w-40")
-                e_freq.bind_visibility_from(e_rec, "value")
+                e_interval = interval_picker(lab.every, lab.unit)
+                e_interval.row.bind_visibility_from(e_rec, "value")
 
                 def save() -> None:
+                    every, unit = e_interval()
                     try:
                         labels.update_label(lab.id, name=e_name.value, color=e_color.value or lab.color,
-                                            recurring=e_rec.value,
-                                            frequency=Frequency(e_freq.value) if e_rec.value else None)
+                                            recurring=e_rec.value, every=every, unit=unit)
                     except ValueError as exc:
                         ui.notify(str(exc), type="warning")
                         return

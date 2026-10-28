@@ -38,10 +38,10 @@ class TxnKind(str, Enum):
     refund = "refund"                # merchant refund / reversal
 
 
-class Frequency(str, Enum):
-    monthly = "monthly"
-    quarterly = "quarterly"
-    yearly = "yearly"
+class IntervalUnit(str, Enum):
+    week = "week"
+    month = "month"
+    year = "year"
 
 
 class Meta(SQLModel, table=True):
@@ -87,7 +87,9 @@ class Label(SQLModel, table=True):
     name: str = Field(unique=True)
     color: str = "#4c78a8"
     is_recurring: bool = False
-    frequency: Optional[Frequency] = None
+    # Recurring labels repeat every `every` units, e.g. 6 months = half-yearly.
+    every: Optional[int] = None
+    unit: Optional[IntervalUnit] = None
 
 
 class ExpenseGroup(SQLModel, table=True):
