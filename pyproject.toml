@@ -1,0 +1,32 @@
+[project]
+name = "expense-tracker"
+version = "0.1.0"
+description = "Personal desktop expense tracker for bank accounts and credit cards"
+requires-python = ">=3.11"
+dependencies = [
+    "nicegui[native,plotly]>=2.10",
+    "sqlmodel>=0.0.22",
+    "pandas>=2.2",
+    "openpyxl>=3.1",
+    "xlrd>=2.0",
+    "pdfplumber>=0.11",
+    "desktop-notifier>=6.0",
+    "keyring>=25",
+    "msoffcrypto-tool>=5.4",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "pypdf>=5"]
+
+[project.scripts]
+expense-tracker = "expense_tracker.__main__:main"
+
+[build-system]
+requires = ["setuptools>=69"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["expense_tracker*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
