@@ -8,7 +8,7 @@ import sys
 from nicegui import app, background_tasks, ui
 from sqlmodel import select
 
-from .config import settings
+from .config import override_data_dir, settings
 from .db import get_session, init_db
 from .db.models import Frequency, Label
 from .db.session import acquire_lock, backup_db, release_lock
@@ -50,7 +50,7 @@ def startup() -> None:
 def main() -> None:
     browser = "--browser" in sys.argv
     if "--data-dir" in sys.argv:  # dev/testing: use a throwaway data folder
-        settings.data_dir = sys.argv[sys.argv.index("--data-dir") + 1]
+        override_data_dir(sys.argv[sys.argv.index("--data-dir") + 1])  # never saved to settings
     app.on_startup(startup)
     app.on_shutdown(lambda: release_lock(settings))
     ui.run(

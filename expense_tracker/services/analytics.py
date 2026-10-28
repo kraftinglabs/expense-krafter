@@ -23,7 +23,7 @@ from ..db.models import (Account, Direction, Frequency, Label, ReimbursementLink
 from . import narration
 
 UNLABELLED = "Unlabelled"
-UNLABELLED_COLOR = "#7d8299"
+UNLABELLED_COLOR = "#a9aeab"
 COLUMNS = ["id", "date", "account", "label", "color", "merchant", "description", "amount"]
 
 _NOISE = re.compile(
@@ -119,7 +119,7 @@ def top_labels(df: pd.DataFrame, n: int = 7) -> pd.DataFrame:
     out = df.copy()
     other = ~out["label"].isin(keep)
     out.loc[other, "label"] = "Other"
-    out.loc[other, "color"] = "#454a5e"
+    out.loc[other, "color"] = "#d5d9d6"
     return out
 
 

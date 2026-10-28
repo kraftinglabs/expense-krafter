@@ -6,7 +6,7 @@ from pathlib import Path
 
 from nicegui import ui
 
-from ..config import settings
+from ..config import save_settings, settings
 
 NAV = [
     ("Dashboard", "/", "space_dashboard"),
@@ -22,7 +22,7 @@ NAV = [
 THEME_CSS = Path(__file__).with_name("theme.css")
 FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
          '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
-         'family=Inter:wght@400;500;600;700&family=Sora:wght@500;600;700&display=swap">')
+         'family=Geist:wght@300;400;500;600&display=swap">')
 
 # Set at startup if another machine seems to have the DB open.
 startup_warning: str | None = None
@@ -33,6 +33,26 @@ def _current_path() -> str:
         return ui.context.client.request.url.path
     except AttributeError:
         return "/"
+
+
+def is_dark() -> bool:
+    return settings.theme == "dark"
+
+
+def set_theme(theme: str) -> None:
+    """Save the theme and reload so charts (drawn server-side) pick it up too."""
+    if settings.theme != theme:
+        settings.theme = theme
+        save_settings(settings)
+        ui.navigate.reload()
+
+
+def _theme_switch() -> None:
+    with ui.element("div").classes("et-theme-switch w-full mb-2"):
+        for theme, icon, tip in (("light", "light_mode", "Light"), ("dark", "dark_mode", "Dark")):
+            ui.button(icon=icon, on_click=lambda t=theme: set_theme(t)) \
+                .props("flat dense size=sm").classes("selected" if settings.theme == theme else "") \
+                .tooltip(f"{tip} theme")
 
 
 def _sidebar(active: str) -> None:
@@ -49,7 +69,9 @@ def _sidebar(active: str) -> None:
                     ui.icon(icon)
                     ui.label(label)
             ui.space()
-            in_drive = "drive" in settings.data_dir.lower()
+            _theme_switch()
+            data_dir = str(settings.data_path)  # includes a --data-dir override
+            in_drive = "drive" in data_dir.lower()
             with ui.element("div").classes("et-card w-full p-3"):
                 with ui.row().classes("items-center gap-2 no-wrap"):
                     ui.icon("cloud_done" if in_drive else "computer").classes(
@@ -57,15 +79,14 @@ def _sidebar(active: str) -> None:
                     with ui.column().classes("gap-0 min-w-0"):
                         ui.label("Synced to Google Drive" if in_drive else "Stored on this PC") \
                             .classes("text-xs font-medium")
-                        ui.label(settings.data_dir).classes("et-faint text-[11px] truncate w-40") \
-                            .tooltip(settings.data_dir)
+                        ui.label(data_dir).classes("et-faint text-[11px] truncate w-40").tooltip(data_dir)
 
 
 @contextmanager
 def frame(title: str, subtitle: str = ""):
-    ui.dark_mode(True)
-    ui.colors(primary="#34e0a1", secondary="#0fb39b", positive="#3dd68c", negative="#ff6b7a",
-              warning="#f5b84a", dark="#14161f", dark_page="#07080c")
+    ui.dark_mode(is_dark())
+    ui.colors(primary="#171a18", secondary="#007d56", positive="#007d56", negative="#b42318",
+              warning="#9a5b00")
     ui.add_head_html(FONTS)
     ui.add_css(THEME_CSS)
 

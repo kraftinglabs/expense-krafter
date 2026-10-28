@@ -40,8 +40,7 @@ def _totals(debit: int, credit: int) -> None:
 def _avatar(description: str, color: str | None) -> None:
     name = merchant_name(description)
     initials = "".join(w[0] for w in name.split()[:2]).upper() or "?"
-    bg = (f"linear-gradient(135deg, {color}, {color}99)" if color
-          else "linear-gradient(135deg, #3a3f52, #262a38)")
+    bg = color or "#b4b9b6"
     ui.html(f'<div class="et-avatar" style="background:{bg}">{escape(initials)}</div>', sanitize=False)
 
 

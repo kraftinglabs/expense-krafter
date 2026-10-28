@@ -3,7 +3,6 @@
 from __future__ import annotations
 
 import os
-from html import escape
 
 from nicegui import ui
 from sqlmodel import select
@@ -12,12 +11,12 @@ from ..config import save_settings, settings
 from ..db import get_session
 from ..db.models import Account, AccountType, Frequency, Label
 from ..importers import parser_options
-from ..services import narration, vault
+from ..services import labels, narration, vault
 from ..services.importer import reapply_rule_types
 from ..services.money import fmt
 from ..services.accounts import delete_account, mask_account_number, save_account, usage_count
 from . import icons
-from .layout import frame
+from .layout import frame, set_theme
 
 
 @ui.page("/accounts")
@@ -158,40 +157,113 @@ def accounts_page() -> None:
 @ui.page("/labels")
 def labels_page() -> None:
     with frame("Labels", "Categories for your spending; recurring ones power the subscriptions view"):
+        frequencies = {f.value: f.value.capitalize() for f in Frequency}
+
+        with ui.card().classes("w-full"):
+            ui.label("Add label").classes("et-card-title")
+            ui.label("A colour is picked for you; change it any time with Edit.").classes("text-xs et-faint")
+            with ui.row().classes("items-end gap-3 mt-2"):
+                name = ui.input("Name").classes("w-56").props("outlined dense")
+                recurring = ui.checkbox("Recurring")
+                freq = ui.select(frequencies, value="monthly").props("outlined dense").classes("w-36")
+                freq.bind_visibility_from(recurring, "value")
+
+                def add() -> None:
+                    try:
+                        lab = labels.create_label(name.value, recurring.value,
+                                                  Frequency(freq.value) if recurring.value else None)
+                    except ValueError as exc:
+                        ui.notify(str(exc), type="warning")
+                        return
+                    name.value = ""
+                    listing.refresh()
+                    ui.notify(f"Added “{lab.name}”", type="positive")
+
+                name.on("keydown.enter", add)
+                ui.button("Add", icon="add", on_click=add)
+
         @ui.refreshable
         def listing() -> None:
             with get_session() as s:
                 rows = s.exec(select(Label).order_by(Label.name)).all()
-            with ui.row().classes("gap-2 flex-wrap"):
-                for lab in rows:
-                    recurring = (f'<span class="et-faint">↻ {lab.frequency.value}</span>'
-                                 if lab.is_recurring and lab.frequency else "")
-                    ui.html(
-                        f'<span class="et-chip" style="padding:6px 14px;font-size:13px;color:var(--text);'
-                        f'background:{lab.color}1f;border-color:{lab.color}55">'
-                        f'<span class="et-dot" style="background:{lab.color}"></span>{escape(lab.name)}'
-                        f'{recurring}</span>', sanitize=False)
+            if not rows:
+                ui.label("No labels yet.").classes("et-muted")
+                return
+            with ui.element("div").classes("et-card w-full"):
+                for i, lab in enumerate(rows):
+                    used = labels.usage_count(lab.id)
+                    with ui.row().classes("w-full items-center gap-4 no-wrap px-5 py-3") \
+                            .style("" if i == 0 else "border-top: var(--hair) solid var(--border)"):
+                        ui.html(f'<span class="et-dot" style="width:12px;height:12px;background:{lab.color}"></span>',
+                                sanitize=False).classes("flex-none")
+                        ui.label(lab.name).classes("flex-1 min-w-0 et-break")
+                        if lab.is_recurring and lab.frequency:
+                            ui.label(f"Recurring · {lab.frequency.value}").classes("et-chip flex-none")
+                        ui.label(f"{used} transaction{'s' if used != 1 else ''}" if used else "Unused") \
+                            .classes("text-sm et-faint et-num w-28 text-right flex-none")
+                        with ui.row().classes("flex-none gap-1 no-wrap"):
+                            ui.button(icon="edit", on_click=lambda lab=lab: edit_dialog(lab)) \
+                                .props("flat round dense color=grey-7").tooltip("Edit")
+                            # A disabled button shows no tooltip, so the reason goes on a wrapper.
+                            with ui.element("span") as wrap:
+                                delete = ui.button(icon="delete", on_click=lambda lab=lab: confirm_delete(lab)) \
+                                    .props("flat round dense color=negative")
+                            if used:
+                                delete.disable()
+                                wrap.tooltip(f"In use by {used} transaction{'s' if used != 1 else ''}; can't delete")
+                            else:
+                                delete.tooltip("Delete")
 
-        with ui.card().classes("w-full"):
-            ui.label("Add label").classes("font-medium")
-            with ui.row().classes("items-end gap-3"):
-                name = ui.input("Name").classes("w-48")
-                color = ui.color_input("Color", value="#4c78a8").classes("w-40")
-                recurring = ui.checkbox("Recurring")
-                freq = ui.select({f.value: f.value for f in Frequency}, value="monthly", label="Frequency").classes("w-36")
-                freq.bind_visibility_from(recurring, "value")
+        def edit_dialog(lab: Label) -> None:
+            with ui.dialog() as dlg, ui.card().classes("w-[26rem]"):
+                ui.label("Edit label").classes("text-lg")
+                e_name = ui.input("Name", value=lab.name).classes("w-full").props("outlined dense")
+                e_color = ui.color_input("Colour", value=lab.color, preview=True).classes("w-full") \
+                    .props("outlined dense")
+                with ui.row().classes("gap-1.5 flex-wrap"):
+                    for c in labels.PALETTE:
+                        ui.element("div").classes("cursor-pointer").style(
+                            f"width:22px;height:22px;border-radius:3px;background:{c}") \
+                            .on("click", lambda c=c: e_color.set_value(c)).tooltip(c)
+                e_rec = ui.checkbox("Recurring", value=lab.is_recurring)
+                e_freq = ui.select(frequencies, value=(lab.frequency or Frequency.monthly).value) \
+                    .props("outlined dense").classes("w-40")
+                e_freq.bind_visibility_from(e_rec, "value")
 
-                def add() -> None:
-                    if not name.value:
+                def save() -> None:
+                    try:
+                        labels.update_label(lab.id, name=e_name.value, color=e_color.value or lab.color,
+                                            recurring=e_rec.value,
+                                            frequency=Frequency(e_freq.value) if e_rec.value else None)
+                    except ValueError as exc:
+                        ui.notify(str(exc), type="warning")
                         return
-                    with get_session() as s:
-                        s.add(Label(name=name.value, color=color.value, is_recurring=recurring.value,
-                                    frequency=Frequency(freq.value) if recurring.value else None))
-                        s.commit()
-                    name.value = ""
+                    dlg.close()
                     listing.refresh()
 
-                ui.button("Add", icon="add", on_click=add)
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Save", icon="check", on_click=save)
+            dlg.open()
+
+        def confirm_delete(lab: Label) -> None:
+            with ui.dialog() as dlg, ui.card().classes("w-96"):
+                ui.label(f"Delete “{lab.name}”?").classes("text-lg")
+                ui.label("It isn't used by any transaction.").classes("text-sm et-muted")
+
+                def do_delete() -> None:
+                    try:
+                        labels.delete_label(lab.id)
+                    except ValueError as exc:  # became used meanwhile
+                        ui.notify(str(exc), type="warning")
+                    dlg.close()
+                    listing.refresh()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Delete", icon="delete", on_click=do_delete).props("color=negative")
+            dlg.open()
+
         listing()
 
 
@@ -205,6 +277,15 @@ def splits_page() -> None:
 @ui.page("/settings")
 def settings_page() -> None:
     with frame("Settings", "Where your data lives and when to remind you"):
+        with ui.card().classes("w-full max-w-3xl"):
+            ui.label("Appearance").classes("font-medium")
+            with ui.row().classes("items-center gap-4"):
+                ui.label("Theme").classes("text-sm et-muted w-20")
+                ui.toggle({"light": "Light", "dark": "Dark"}, value=settings.theme,
+                          on_change=lambda e: set_theme(e.value)) \
+                    .props("unelevated no-caps toggle-color=primary color=transparent text-color=grey-7 "
+                           "padding='4px 16px'").classes("et-segment")
+
         with ui.card().classes("w-full max-w-3xl"):
             ui.label("Data folder").classes("font-medium")
             ui.label("Point this at a folder inside Google Drive for Desktop (e.g. G:\\My Drive\\ExpenseTracker) "
