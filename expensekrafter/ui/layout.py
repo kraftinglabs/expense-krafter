@@ -20,6 +20,8 @@ NAV = [
 ]
 
 THEME_CSS = Path(__file__).with_name("theme.css")
+# Pixel-art app icon (packaging/make_icon.py draws it).
+LOGO_SVG = Path(__file__).with_name("logo.svg")
 FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
          '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
          'family=Geist:wght@300;400;500;600&display=swap">')
@@ -59,9 +61,9 @@ def _sidebar(active: str) -> None:
     with ui.left_drawer(value=True, fixed=True).classes("et-drawer").props("width=248 bordered=false"):
         with ui.column().classes("w-full h-full px-3 py-5 gap-1 no-wrap"):
             with ui.row().classes("items-center gap-3 px-2 pb-6"):
-                ui.html('<div class="et-brand-mark">₹</div>', sanitize=False)
+                ui.html(f'<div class="et-brand-mark">{LOGO_SVG.read_text(encoding="utf-8")}</div>', sanitize=False)
                 with ui.column().classes("gap-0"):
-                    ui.label("Expense Tracker").classes("et-display text-base font-semibold")
+                    ui.label("ExpenseKrafter").classes("et-display text-base font-semibold")
                     ui.label("Personal finance").classes("et-faint text-xs")
             ui.label("Menu").classes("et-eyebrow px-3 pb-1")
             for label, path, icon in NAV:

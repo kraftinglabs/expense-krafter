@@ -2,9 +2,9 @@
   "version": "0.0.1",
   "configurations": [
     {
-      "name": "expense-tracker-browser",
+      "name": "expensekrafter-browser",
       "runtimeExecutable": ".venv/Scripts/python.exe",
-      "runtimeArgs": ["-m", "expense_tracker", "--browser", "--data-dir", ".devdata"],
+      "runtimeArgs": ["-m", "expensekrafter", "--browser", "--data-dir", ".devdata"],
       "port": 8080
     }
   ]

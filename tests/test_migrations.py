@@ -1,8 +1,8 @@
 import sqlite3
 
-from expense_tracker.db import get_session, init_db
-from expense_tracker.db.migrations import MIGRATIONS
-from expense_tracker.db.models import Account, AccountType, IntervalUnit, Label
+from expensekrafter.db import get_session, init_db
+from expensekrafter.db.migrations import MIGRATIONS
+from expensekrafter.db.models import Account, AccountType, IntervalUnit, Label
 from sqlmodel import select
 
 

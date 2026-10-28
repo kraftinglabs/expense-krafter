@@ -1,4 +1,4 @@
-"""Entry point: `python -m expense_tracker` (desktop window) or `--browser`."""
+"""Entry point: `python -m expensekrafter` (desktop window) or `--browser`."""
 
 from __future__ import annotations
 
@@ -8,10 +8,10 @@ import sys
 from nicegui import app, background_tasks, ui
 from sqlmodel import select
 
-from .config import override_data_dir, settings
+from .config import adopt_legacy_install, override_data_dir, reload_settings, settings
 from .db import get_session, init_db
 from .db.models import IntervalUnit, Label
-from .db.session import acquire_lock, backup_db, release_lock
+from .db.session import acquire_lock, adopt_legacy_db, backup_db, release_lock
 from .services.notify import send_due_notifications
 from .ui import layout
 
@@ -41,6 +41,7 @@ async def due_date_loop() -> None:
 
 
 def startup() -> None:
+    adopt_legacy_db(settings)
     backup_db(settings)
     layout.startup_warning = acquire_lock(settings)
     init_db(settings)
@@ -52,16 +53,18 @@ def main() -> None:
     browser = "--browser" in sys.argv
     if "--data-dir" in sys.argv:  # dev/testing: use a throwaway data folder
         override_data_dir(sys.argv[sys.argv.index("--data-dir") + 1])  # never saved to settings
+    elif adopt_legacy_install():  # first run after the rename from ExpenseTracker
+        reload_settings()
     app.on_startup(startup)
     app.on_shutdown(lambda: release_lock(settings))
     ui.run(
-        title="Expense Tracker",
+        title="ExpenseKrafter",
         native=not browser,
         window_size=None if browser else (1440, 900),
         port=8080 if browser else None,
         show=False,
         reload=False,
-        favicon="💸",
+        favicon=layout.LOGO_SVG,
     )
 
 

@@ -1,9 +1,9 @@
 import pandas as pd
 import pytest
 
-from expense_tracker.db import get_session, init_db
-from expense_tracker.db.models import Account, AccountType, Direction, Transaction
-from expense_tracker.services.importer import commit_import, preview_import
+from expensekrafter.db import get_session, init_db
+from expensekrafter.db.models import Account, AccountType, Direction, Transaction
+from expensekrafter.services.importer import commit_import, preview_import
 from sqlmodel import select
 
 
@@ -65,9 +65,9 @@ def test_identical_rows_without_balance_are_kept(tmp_path, account_id):
 def test_reapply_rule_types_respects_manual_choices(account_id):
     from datetime import date as d
 
-    from expense_tracker.db.models import TxnKind
-    from expense_tracker.services.importer import reapply_rule_types
-    from expense_tracker.services.ledger import set_fields
+    from expensekrafter.db.models import TxnKind
+    from expensekrafter.services.importer import reapply_rule_types
+    from expensekrafter.services.ledger import set_fields
 
     bill = "WDL TFR   INB SBICARD FOR BILLDESK      SBICARD Payments   0097691162095 AT 12345 MG ROAD"
     with get_session() as s:
@@ -126,8 +126,8 @@ def test_unticked_rows_are_skipped_and_remembered(tmp_path, account_id):
 
 
 def test_reimporting_a_card_statement_does_not_duplicate_the_bill(tmp_path, account_id):
-    from expense_tracker.db.models import CCStatement
-    from expense_tracker.importers.base import CardSummary
+    from expensekrafter.db.models import CCStatement
+    from expensekrafter.importers.base import CardSummary
     from datetime import date as d
 
     f = tmp_path / "card.csv"

@@ -3,8 +3,8 @@ import pypdf
 import pytest
 from msoffcrypto.format.ooxml import OOXMLFile
 
-from expense_tracker.importers import PasswordRequired, get_parser
-from expense_tracker.services.accounts import mask_account_number
+from expensekrafter.importers import PasswordRequired, get_parser
+from expensekrafter.services.accounts import mask_account_number
 
 
 def test_mask_keeps_only_first_five():
@@ -59,7 +59,7 @@ def test_encrypted_pdf(tmp_path):
 def test_data_dir_override_is_never_saved(tmp_path, monkeypatch):
     import json
 
-    from expense_tracker import config
+    from expensekrafter import config
 
     monkeypatch.setattr(config, "SETTINGS_FILE", tmp_path / "settings.json")
     monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
@@ -71,3 +71,49 @@ def test_data_dir_override_is_never_saved(tmp_path, monkeypatch):
     config.save_settings(s)
     saved = json.loads((tmp_path / "settings.json").read_text())
     assert saved["data_dir"] == "C:/real/data" and saved["theme"] == "dark"
+
+
+def test_files_from_before_the_rename_are_adopted(tmp_path, monkeypatch):
+    import json
+
+    from expensekrafter import config
+
+    old_cfg, old_data = tmp_path / "Roaming/ExpenseTracker", tmp_path / "Local/ExpenseTracker/data"
+    new_cfg, new_data = tmp_path / "Roaming/ExpenseKrafter", tmp_path / "Local/ExpenseKrafter/data"
+    for name, value in {"CONFIG_DIR": new_cfg, "SETTINGS_FILE": new_cfg / "settings.json",
+                        "DEFAULT_DATA_DIR": new_data, "LEGACY_CONFIG_DIR": old_cfg,
+                        "LEGACY_DATA_DIR": old_data}.items():
+        monkeypatch.setattr(config, name, value)
+    old_cfg.mkdir(parents=True)
+    old_data.mkdir(parents=True)
+    (old_cfg / "settings.json").write_text(json.dumps({"data_dir": str(old_data), "theme": "dark"}))
+    (old_data / "expense_tracker.db").write_text("db")
+    (old_data / "expense_tracker.lock").write_text("pc")
+    new_cfg.mkdir(parents=True)
+    (new_cfg / "app.log").write_text("")  # the packaged app opens its log first
+
+    assert config.adopt_legacy_install()
+    saved = json.loads((new_cfg / "settings.json").read_text())
+    assert saved == {"data_dir": str(new_data), "theme": "dark"}
+    assert (new_data / "expense_tracker.db").exists() and not (new_data / "expense_tracker.lock").exists()
+    assert (old_data / "expense_tracker.db").exists()  # old copy kept as a fallback
+
+    from expensekrafter.db.session import adopt_legacy_db
+    s = config.Settings(data_dir=str(new_data))
+    monkeypatch.setattr(config, "_data_dir_override", None)
+    adopt_legacy_db(s)
+    assert s.db_path.name == "expensekrafter.db" and s.db_path.read_text() == "db"
+    assert not config.adopt_legacy_install()  # second start: nothing to do
+
+
+def test_saved_passwords_move_to_the_new_name(tmp_path):
+    import keyring
+
+    from expensekrafter.db import init_db
+    from expensekrafter.services import vault
+
+    init_db(db_path=tmp_path / "v.db")
+    keyring.set_password(vault.LEGACY_SERVICE, vault._user(3), "old-secret")
+    assert vault.get_password(3) == "old-secret"
+    assert keyring.get_password(vault.SERVICE, vault._user(3)) == "old-secret"
+    assert keyring.get_password(vault.LEGACY_SERVICE, vault._user(3)) is None

@@ -124,7 +124,7 @@ def _kpi(title: str, value: str, icon: str, sub: str = "", sub_class: str = "et-
 
 
 def _hero_kpi(title: str, total: float, change: float | None, prev: float, trend: pd.Series,
-              daily: bool, count: int, per_day: float) -> None:
+              daily: bool, count: int, per_day: float, per_month: float) -> None:
     with ui.card().classes("et-kpi hero et-rise flex-[1.6] min-w-80 flex flex-col"):
         with ui.row().classes("w-full items-center justify-between no-wrap"):
             ui.label(title).classes("et-muted text-sm font-medium")
@@ -137,7 +137,8 @@ def _hero_kpi(title: str, total: float, change: float | None, prev: float, trend
         ui.space()
         _hero_trend(trend, daily)
         with ui.row().classes("w-full gap-6 pt-3 mt-1 et-hero-rule"):
-            for value, label in ((f"{count:,}", "transactions"), (_rupees(per_day), "per day")):
+            for value, label in ((f"{count:,}", "transactions"), (_rupees(per_day), "per day"),
+                                 (_rupees(per_month), "per month")):
                 with ui.column().classes("gap-0"):
                     ui.label(value).classes("et-num font-semibold")
                     ui.label(label).classes("et-faint text-xs")
@@ -209,6 +210,30 @@ def cash_flow(spend: pd.DataFrame, income: pd.DataFrame, period: analytics.Perio
         fig.update_layout(barmode="group", bargap=0.3, bargroupgap=0.08, hovermode="x unified")
         fig.update_xaxes(tickformat="%b %Y", dtick="M1", hoverformat="%B %Y")
         fig.update_yaxes(zeroline=True, zerolinecolor=_c()["axis"])
+        ui.plotly(fig).classes("w-full")
+
+
+def balance_chart(daily: pd.DataFrame, period: analytics.Period | None) -> None:
+    with _chart_card("Bank balance", "End-of-day balance from your statements, per account"):
+        if daily.empty:
+            return _empty("No statement with a balance column yet.")
+        shown = daily
+        if period:
+            start = max(pd.Timestamp(period.start) - pd.Timedelta(days=1), daily.index.min())
+            shown = daily.loc[start:pd.Timestamp(min(period.end - timedelta(days=1), date.today()))]
+        x = _iso(shown.index)
+        fig = go.Figure()
+        for acc in shown.columns:
+            fig.add_scatter(x=x, y=shown[acc].values, name=acc, mode="lines", stackgroup="one",
+                            line=dict(width=1.5, shape="hv"),
+                            hovertemplate=f"{acc}: ₹%{{y:,.0f}}<extra></extra>")
+        total = shown.sum(axis=1)
+        fig.add_scatter(x=x, y=total.values, name="Total", mode="lines",
+                        line=dict(color=_c()["ink"], width=2, shape="hv"),
+                        hovertemplate="Total: ₹%{y:,.0f}<extra></extra>")
+        _style(fig, height=320, legend=True)
+        fig.update_layout(hovermode="x unified", colorway=[_c()["accent"], "#2a78d6", "#eda100", "#6250d6"])
+        fig.update_xaxes(hoverformat="%d %b %Y")
         ui.plotly(fig).classes("w-full")
 
 
@@ -353,11 +378,16 @@ def dashboard_page() -> None:
             top = (labelled.groupby("label")["amount"].sum().sort_values(ascending=False) if not labelled.empty
                    else pd.Series(dtype=float))
             pending = cards.statement_statuses(only_pending=True)
+            balances = analytics.daily_balances(analytics.balance_history(state["account"]))
+            now_bal = analytics.balance_on(balances, date.today())
+            start_bal = analytics.balance_on(balances, period.start - timedelta(days=1)) if period else None
+            if now_bal is not None and start_bal is None and not balances.empty:
+                start_bal = float(balances.iloc[0].sum())  # period starts before the first statement
             unlabelled = int((df["label"] == analytics.UNLABELLED).sum()) if not df.empty else 0
 
             with ui.row().classes("w-full gap-4 items-stretch"):
                 _hero_kpi(f"Spent · {PERIODS[state['period']].lower()}", total, change, prev, trend, daily,
-                          len(df), total / _days_elapsed(df, period))
+                          len(df), total / _days_elapsed(df, period), total / _months_in(df, period))
                 kept = earned - total
                 with ui.element("div").classes("grid grid-cols-2 2xl:grid-cols-3 gap-4 flex-[2] min-w-[30rem]"):
                     _kpi("Income", _rupees(earned), "south_west",
@@ -365,8 +395,13 @@ def dashboard_page() -> None:
                     _kpi("Kept", _rupees(kept), "savings",
                          f"{kept / earned * 100:.0f}% of income" if earned else "no income in this period",
                          "et-warn" if kept < 0 else "et-faint")
-                    _kpi("Average per month", _rupees(total / _months_in(df, period)), "insights",
-                         "net of reimbursements & refunds")
+                    if now_bal is None:
+                        _kpi("Bank balance", "—", "account_balance", "no statement with a balance column")
+                    else:
+                        moved = now_bal - start_bal
+                        _kpi("Bank balance", _rupees(now_bal), "account_balance",
+                             f"{'▲' if moved >= 0 else '▼'} {_rupees(abs(moved))} from {_rupees(start_bal)}",
+                             "et-warn" if moved < 0 else "et-faint")
                     _kpi("Biggest label", top.index[0] if len(top) else "—", "local_offer",
                          f"{_rupees(top.iloc[0])} · {top.iloc[0] / total * 100:.0f}% of spend"
                          if len(top) and total else "")
@@ -379,7 +414,9 @@ def dashboard_page() -> None:
                 with ui.element("div").classes("xl:col-span-2"):
                     spend_over_time(df, period)
                 by_label(df)
-            cash_flow(df, income, period)
+            with ui.element("div").classes("grid grid-cols-1 xl:grid-cols-2 gap-4 w-full"):
+                cash_flow(df, income, period)
+                balance_chart(balances, period)
             with ui.element("div").classes("grid grid-cols-1 xl:grid-cols-2 gap-4 w-full"):
                 month_pace(state["account"])
                 top_merchants(df)

@@ -1,7 +1,7 @@
 """Bank icons for accounts.
 
 Built-in icons live in ui/bank_icons/. Drop your own square SVG/PNG files into
-the user folder (%APPDATA%\\ExpenseTracker\\bank_icons) and they appear in the
+the user folder (%APPDATA%\\ExpenseKrafter\\bank_icons) and they appear in the
 account icon picker; the file name is the icon's name (hdfc.svg -> "Hdfc").
 """
 

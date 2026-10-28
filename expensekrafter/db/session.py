@@ -41,20 +41,29 @@ def _make_engine(db_path: Path):
     return engine
 
 
+def adopt_legacy_db(cfg: Settings) -> None:
+    """Rename the database from its pre-ExpenseKrafter name, wherever the data
+    folder is."""
+    old = cfg.data_path / "expense_tracker.db"
+    if not cfg.db_path.exists() and old.exists():
+        old.rename(cfg.db_path)
+
+
 def backup_db(cfg: Settings) -> Path | None:
     if not cfg.db_path.exists():
         return None
     cfg.backup_dir.mkdir(parents=True, exist_ok=True)
-    dest = cfg.backup_dir / f"expense_tracker_{datetime.now():%Y%m%d_%H%M%S}.db"
+    dest = cfg.backup_dir / f"expensekrafter_{datetime.now():%Y%m%d_%H%M%S}.db"
     shutil.copy2(cfg.db_path, dest)
-    backups = sorted(cfg.backup_dir.glob("expense_tracker_*.db"))
+    # Oldest first by time, so backups from before the rename age out too.
+    backups = sorted(cfg.backup_dir.glob("*.db"), key=lambda p: p.stat().st_mtime)
     for old in backups[: -cfg.backups_to_keep]:
         old.unlink()
     return dest
 
 
 def _lock_path(cfg: Settings) -> Path:
-    return cfg.data_path / "expense_tracker.lock"
+    return cfg.data_path / "expensekrafter.lock"
 
 
 def acquire_lock(cfg: Settings) -> str | None:

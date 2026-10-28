@@ -1,8 +1,8 @@
 from datetime import date
 
-from expense_tracker.db.models import Account, AccountType, Direction, TxnKind
-from expense_tracker.services.analytics import merchant_name, period_for
-from expense_tracker.services.importer import default_kind
+from expensekrafter.db.models import Account, AccountType, Direction, TxnKind
+from expensekrafter.services.analytics import merchant_name, period_for
+from expensekrafter.services.importer import default_kind
 
 
 def test_card_bill_payments_are_not_spend():
@@ -30,8 +30,8 @@ def test_period_presets():
 
 def _db_with(tmp_path, rows):
     """rows: (date, description, rupees, direction, kind, label_id)."""
-    from expense_tracker.db import get_session, init_db
-    from expense_tracker.db.models import Transaction
+    from expensekrafter.db import get_session, init_db
+    from expensekrafter.db.models import Transaction
 
     init_db(db_path=tmp_path / "a.db")
     with get_session() as s:
@@ -47,9 +47,9 @@ def _db_with(tmp_path, rows):
 
 
 def test_spend_counts_reimbursements_and_keeps_income_separate(tmp_path):
-    from expense_tracker.db import get_session
-    from expense_tracker.db.models import ReimbursementLink
-    from expense_tracker.services import analytics
+    from expensekrafter.db import get_session
+    from expensekrafter.db.models import ReimbursementLink
+    from expensekrafter.services import analytics
 
     D, C = Direction.debit, Direction.credit
     ids = _db_with(tmp_path, [
@@ -74,8 +74,8 @@ def test_spend_counts_reimbursements_and_keeps_income_separate(tmp_path):
 
 
 def test_half_yearly_subscription_yearly_cost(tmp_path):
-    from expense_tracker.db import init_db
-    from expense_tracker.services import analytics, labels
+    from expensekrafter.db import init_db
+    from expensekrafter.services import analytics, labels
 
     init_db(db_path=tmp_path / "a.db")
     lab = labels.create_label("Insurance", recurring=True, every=6)
@@ -83,3 +83,28 @@ def test_half_yearly_subscription_yearly_cost(tmp_path):
     _db_with(tmp_path, [(today, "ACKO POLICY", 1200, Direction.debit, TxnKind.expense, lab.id)])
     items = analytics.recurring_items()
     assert items.iloc[0]["frequency"] == "Half-yearly" and items.iloc[0]["yearly"] == 2400
+
+
+def test_balance_history_starts_from_the_opening_balance(tmp_path):
+    from expensekrafter.db import get_session, init_db
+    from expensekrafter.db.models import Transaction
+    from expensekrafter.services import analytics
+
+    init_db(db_path=tmp_path / "b.db")
+    with get_session() as s:
+        a, b = Account(name="SBI", type=AccountType.bank), Account(name="DCB", type=AccountType.bank)
+        s.add_all([a, b])
+        s.flush()
+        rows = [(a, date(2026, 1, 5), Direction.debit, 1000, 99000),   # opened at 1,00,000
+                (a, date(2026, 1, 5), Direction.credit, 500, 99500),   # same day: last row wins
+                (a, date(2026, 1, 20), Direction.debit, 9500, 90000),
+                (b, date(2026, 1, 10), Direction.credit, 5000, 25000)]  # opened at 20,000
+        s.add_all(Transaction(account_id=acc.id, txn_date=d, description="x", amount_minor=amt * 100,
+                              direction=dr, balance_minor=bal * 100, fingerprint=f"f{i}")
+                  for i, (acc, d, dr, amt, bal) in enumerate(rows))
+        s.commit()
+    daily = analytics.daily_balances(analytics.balance_history(), until=date(2026, 1, 31))
+    assert analytics.balance_on(daily, date(2026, 1, 4)) == 100000 + 20000
+    assert analytics.balance_on(daily, date(2026, 1, 5)) == 99500 + 20000
+    assert analytics.balance_on(daily, date(2026, 1, 31)) == 90000 + 25000
+    assert analytics.balance_on(daily, date(2025, 12, 1)) is None

@@ -204,3 +204,53 @@ def recurring_items(months: int = 12) -> pd.DataFrame:
              .agg(last_date=("date", "max"), last_amount=("amount", "last"), times=("amount", "size")))
     out["yearly"] = out["last_amount"] * out["per_year"]
     return out.sort_values("yearly", ascending=False)
+
+
+def balance_history(account_id: int | None = None) -> pd.DataFrame:
+    """End-of-day balance per bank account, from the running balance printed on
+    each statement row. Columns: date, account, balance (rupees). Each account
+    also gets a row for the day before its first transaction holding the
+    opening balance (the first row's balance with that row undone), so the
+    money you already had is never assumed to be zero."""
+    with get_session() as s:
+        q = (select(Transaction.txn_date, Transaction.direction, Transaction.amount_minor,
+                    Transaction.balance_minor, Account.name)
+             .join(Account, Account.id == Transaction.account_id)
+             .where(Transaction.balance_minor != None)  # noqa: E711
+             .order_by(Transaction.account_id, Transaction.txn_date, Transaction.id))
+        if account_id:
+            q = q.where(Transaction.account_id == account_id)
+        rows = s.exec(q).all()
+    if not rows:
+        return pd.DataFrame(columns=["date", "account", "balance"])
+    df = pd.DataFrame(rows, columns=["date", "direction", "amount", "balance", "account"])
+    df["date"] = pd.to_datetime(df["date"])
+    openings = []
+    for acc, part in df.groupby("account", sort=False):
+        first = part.iloc[0]
+        undo = first["amount"] if first["direction"] == Direction.debit else -first["amount"]
+        openings.append({"date": first["date"] - pd.Timedelta(days=1), "account": acc,
+                         "balance": first["balance"] + undo})
+    eod = df.groupby(["account", "date"], as_index=False, sort=False).last()[["date", "account", "balance"]]
+    out = pd.concat([pd.DataFrame(openings), eod], ignore_index=True)
+    out["balance"] = out["balance"] / 100
+    return out.sort_values(["account", "date"], ignore_index=True)
+
+
+def daily_balances(history: pd.DataFrame, until: date | None = None) -> pd.DataFrame:
+    """One column per account, one row per day, carried forward over days with
+    no transactions. Before an account's first statement its opening balance is
+    used, so totals across accounts that start on different dates add up."""
+    if history.empty:
+        return pd.DataFrame()
+    wide = history.pivot_table(index="date", columns="account", values="balance", aggfunc="last")
+    end = pd.Timestamp(until or date.today())
+    days = pd.date_range(wide.index.min(), max(end, wide.index.max()), freq="D")
+    return wide.reindex(days).ffill().bfill()
+
+
+def balance_on(daily: pd.DataFrame, day: date) -> float | None:
+    """Total balance at the end of `day`, or None if it's before any data."""
+    if daily.empty or pd.Timestamp(day) < daily.index.min():
+        return None
+    return float(daily.loc[:pd.Timestamp(day)].iloc[-1].sum())

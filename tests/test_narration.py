@@ -1,9 +1,9 @@
 """Description rules. All examples are made up but follow the exact layout of
 SBI savings exports, including the mid-word line wraps."""
 
-from expense_tracker.services import narration
-from expense_tracker.services.analytics import merchant_name
-from expense_tracker.services.narration import load_rules, parse
+from expensekrafter.services import narration
+from expensekrafter.services.analytics import merchant_name
+from expensekrafter.services.narration import load_rules, parse
 
 TRAILER = "   0097691162095 AT 12345 MG ROAD BRANCH"
 

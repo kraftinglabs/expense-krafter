@@ -29,7 +29,7 @@ async def send_due_notifications() -> list[str]:
     try:
         from desktop_notifier import DesktopNotifier
 
-        _notifier = _notifier or DesktopNotifier(app_name="Expense Tracker")
+        _notifier = _notifier or DesktopNotifier(app_name="ExpenseKrafter")
         await _notifier.send(title="Credit card bills due", message="\n".join(msgs))
     except Exception:  # notifications are best-effort
         log.exception("Desktop notification failed")

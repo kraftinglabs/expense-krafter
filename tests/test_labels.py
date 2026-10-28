@@ -3,9 +3,9 @@ from datetime import date
 
 import pytest
 
-from expense_tracker.db import get_session, init_db
-from expense_tracker.db.models import Account, AccountType, Direction, IntervalUnit, Label, Transaction
-from expense_tracker.services import labels
+from expensekrafter.db import get_session, init_db
+from expensekrafter.db.models import Account, AccountType, Direction, IntervalUnit, Label, Transaction
+from expensekrafter.services import labels
 
 
 @pytest.fixture(autouse=True)

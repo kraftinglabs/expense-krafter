@@ -1,18 +1,65 @@
+# ── Python / tooling ────────────────────────────────────────────────
 .venv/
+venv/
 __pycache__/
-*.pyc
+*.py[cod]
+*.egg-info/
 .pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
 .nicegui/
+
+# ── Build output (python build.py) ─────────────────────────────────
 build/
 dist/
 *.spec
-*.egg-info/
 
-# Never commit real statements or the database
-samples/private/
+# ── Your financial data: never publish ──────────────────────────────
+# The database, its journal/lock files and launch backups.
 *.db
 *.db-journal
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+*.lock
+backups/
 .devdata/
+# Bank and card statements (and exports of them). Test fixtures, if ever
+# added, go in tests/fixtures/ and must be made-up data.
+*.pdf
+*.xls
+*.xlsx
+*.xlsm
+*.csv
+!tests/fixtures/**
+samples/private/
+# Copies of per-machine files that normally live in %APPDATA%\ExpenseKrafter:
+# settings (data folder path), your edited description rules, the app log.
+settings.json
+narration_rules.user.toml
+*.log
 
+# ── Secrets ─────────────────────────────────────────────────────────
+.env
+.env.*
+*.pem
+*.key
+*.pfx
+
+# ── Editors / OS ────────────────────────────────────────────────────
+.vscode/
+.idea/
+*.swp
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# ── Claude Code ─────────────────────────────────────────────────────
+# Personal settings and local permissions; the shared skill and
+# launch.json stay committed.
+.claude/settings.local.json
 # Design process files from the oil-ui skill (screenshots, notes)
 .oil-ui/

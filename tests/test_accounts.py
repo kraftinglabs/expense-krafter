@@ -2,9 +2,9 @@ from datetime import date
 
 import pytest
 
-from expense_tracker.db import get_session, init_db
-from expense_tracker.db.models import Account, AccountType, Direction, Transaction
-from expense_tracker.services.accounts import delete_account, save_account
+from expensekrafter.db import get_session, init_db
+from expensekrafter.db.models import Account, AccountType, Direction, Transaction
+from expensekrafter.services.accounts import delete_account, save_account
 
 
 @pytest.fixture(autouse=True)

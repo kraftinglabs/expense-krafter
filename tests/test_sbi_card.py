@@ -3,9 +3,9 @@ from a real statement; names, numbers and amounts are made up."""
 
 from datetime import date
 
-from expense_tracker.db.models import Direction
-from expense_tracker.importers.sbi_card import parse_text
-from expense_tracker.services.narration import parse
+from expensekrafter.db.models import Direction
+from expensekrafter.importers.sbi_card import parse_text
+from expensekrafter.services.narration import parse
 
 STATEMENT = """GSTIN of SBI Card : 06AAAAA0000A1ZV Stmt/Debit Note/Credit Note/Tax Invoice
 A B CARDHOLDER Credit Card Number

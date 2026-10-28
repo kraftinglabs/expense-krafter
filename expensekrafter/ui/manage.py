@@ -311,7 +311,7 @@ def settings_page() -> None:
 
         with ui.card().classes("w-full max-w-3xl"):
             ui.label("Data folder").classes("font-medium")
-            ui.label("Point this at a folder inside Google Drive for Desktop (e.g. G:\\My Drive\\ExpenseTracker) "
+            ui.label("Point this at a folder inside Google Drive for Desktop (e.g. G:\\My Drive\\ExpenseKrafter) "
                      "to sync the database. Open the app on one machine at a time.").classes("text-sm et-muted")
             data_dir = ui.input("Folder", value=settings.data_dir).classes("w-full")
             alert_days = ui.number("Alert when a card bill is due within (days)", value=settings.due_alert_days,

@@ -1,7 +1,7 @@
 [project]
-name = "expense-tracker"
+name = "expensekrafter"
 version = "0.1.0"
-description = "Personal desktop expense tracker for bank accounts and credit cards"
+description = "ExpenseKrafter: personal desktop expense tracker for bank accounts and credit cards, by Kraftinglabs"
 requires-python = ">=3.11"
 dependencies = [
     "nicegui[native,plotly]>=2.10",
@@ -17,16 +17,17 @@ dependencies = [
 
 [project.optional-dependencies]
 dev = ["pytest>=8", "pypdf>=5"]
+build = ["pyinstaller>=6.10"]
 
 [project.scripts]
-expense-tracker = "expense_tracker.__main__:main"
+expensekrafter = "expensekrafter.__main__:main"
 
 [build-system]
 requires = ["setuptools>=69"]
 build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
-include = ["expense_tracker*"]
+include = ["expensekrafter*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

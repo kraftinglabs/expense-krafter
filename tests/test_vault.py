@@ -1,5 +1,5 @@
-from expense_tracker.db import init_db
-from expense_tracker.services import vault
+from expensekrafter.db import init_db
+from expensekrafter.services import vault
 
 
 def test_passwords_do_not_leak_between_databases(tmp_path):
