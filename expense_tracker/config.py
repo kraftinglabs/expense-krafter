@@ -26,11 +26,13 @@ class Settings:
     due_alert_days: int = 5
     # How many startup backups of the DB to keep.
     backups_to_keep: int = 15
+    # "light" or "dark"; per machine, like the rest of these settings.
+    theme: str = "light"
     extra: dict = field(default_factory=dict)
 
     @property
     def data_path(self) -> Path:
-        return Path(self.data_dir)
+        return Path(_data_dir_override or self.data_dir)
 
     @property
     def db_path(self) -> Path:
@@ -39,6 +41,16 @@ class Settings:
     @property
     def backup_dir(self) -> Path:
         return self.data_path / "backups"
+
+
+# Set by `--data-dir` for development/testing. Kept out of Settings on purpose
+# so saving settings (e.g. switching theme) never persists the throwaway folder.
+_data_dir_override: str | None = None
+
+
+def override_data_dir(path: str) -> None:
+    global _data_dir_override
+    _data_dir_override = path
 
 
 def load_settings() -> Settings:

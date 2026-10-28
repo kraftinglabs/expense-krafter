@@ -67,7 +67,7 @@ def cards_page() -> None:
                                 .classes("et-display text-xl font-semibold et-num")
                             ui.label(f"{fmt(x.paid_minor)} of {fmt(total)} paid").classes("text-xs et-faint et-num")
                         ui.html(
-                            '<div style="height:6px;border-radius:6px;background:rgba(255,255,255,.07);overflow:hidden">'
+                            '<div style="height:4px;border-radius:2px;background:var(--surface-3);overflow:hidden">'
                             f'<div style="width:{paid_pct:.1f}%;height:100%;border-radius:6px;'
                             'background:var(--accent-grad)"></div></div>',
                             sanitize=False).classes("w-full")

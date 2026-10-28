@@ -8,9 +8,9 @@ import sys
 from nicegui import app, background_tasks, ui
 from sqlmodel import select
 
-from .config import settings
+from .config import override_data_dir, settings
 from .db import get_session, init_db
-from .db.models import Frequency, Label
+from .db.models import IntervalUnit, Label
 from .db.session import acquire_lock, backup_db, release_lock
 from .services.notify import send_due_notifications
 from .ui import layout
@@ -29,7 +29,8 @@ def seed_labels() -> None:
         if s.exec(select(Label)).first():
             return
         s.add_all(Label(name=n, color=c) for n, c in DEFAULT_LABELS)
-        s.add(Label(name="Subscriptions", color="#8e6c8a", is_recurring=True, frequency=Frequency.monthly))
+        s.add(Label(name="Subscriptions", color="#8e6c8a", is_recurring=True, every=1,
+                    unit=IntervalUnit.month))
         s.commit()
 
 
@@ -50,7 +51,7 @@ def startup() -> None:
 def main() -> None:
     browser = "--browser" in sys.argv
     if "--data-dir" in sys.argv:  # dev/testing: use a throwaway data folder
-        settings.data_dir = sys.argv[sys.argv.index("--data-dir") + 1]
+        override_data_dir(sys.argv[sys.argv.index("--data-dir") + 1])  # never saved to settings
     app.on_startup(startup)
     app.on_shutdown(lambda: release_lock(settings))
     ui.run(

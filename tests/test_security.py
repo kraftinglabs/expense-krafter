@@ -54,3 +54,20 @@ def test_encrypted_pdf(tmp_path):
     assert exc.value.wrong_password
     # Right password opens it (blank page, so just a "no tables" warning).
     assert parser.parse(path, password="s3cret").warnings
+
+
+def test_data_dir_override_is_never_saved(tmp_path, monkeypatch):
+    import json
+
+    from expense_tracker import config
+
+    monkeypatch.setattr(config, "SETTINGS_FILE", tmp_path / "settings.json")
+    monkeypatch.setattr(config, "CONFIG_DIR", tmp_path)
+    monkeypatch.setattr(config, "_data_dir_override", None)
+    s = config.Settings(data_dir="C:/real/data")
+    config.override_data_dir(str(tmp_path / "dev"))
+    assert s.data_path == tmp_path / "dev"
+    s.theme = "dark"
+    config.save_settings(s)
+    saved = json.loads((tmp_path / "settings.json").read_text())
+    assert saved["data_dir"] == "C:/real/data" and saved["theme"] == "dark"

@@ -2,7 +2,7 @@ import sqlite3
 
 from expense_tracker.db import get_session, init_db
 from expense_tracker.db.migrations import MIGRATIONS
-from expense_tracker.db.models import Account, AccountType
+from expense_tracker.db.models import Account, AccountType, IntervalUnit, Label
 from sqlmodel import select
 
 
@@ -35,3 +35,24 @@ def test_fresh_db_is_marked_current(tmp_path):
     init_db(db_path=db)
     init_db(db_path=db)  # second start is a no-op
     assert sqlite3.connect(db).execute("PRAGMA user_version").fetchone()[0] == len(MIGRATIONS)
+
+
+def test_label_frequency_becomes_interval(tmp_path):
+    db = tmp_path / "labels.db"
+    con = sqlite3.connect(db)
+    con.execute("""CREATE TABLE label (id INTEGER PRIMARY KEY, name VARCHAR NOT NULL UNIQUE, color VARCHAR NOT NULL,
+                   is_recurring BOOLEAN NOT NULL, frequency VARCHAR(9))""")
+    con.executemany("INSERT INTO label VALUES (?, ?, '#000000', ?, ?)",
+                    [(1, "Subscriptions", 1, "monthly"), (2, "Insurance", 1, "yearly"),
+                     (3, "Gym", 1, "quarterly"), (4, "Food", 0, None)])
+    con.execute("PRAGMA user_version = 4")
+    con.commit()
+    con.close()
+
+    init_db(db_path=db)
+    with get_session() as s:
+        got = {lab.name: (lab.every, lab.unit) for lab in s.exec(select(Label))}
+    assert got == {"Subscriptions": (1, IntervalUnit.month), "Insurance": (1, IntervalUnit.year),
+                   "Gym": (3, IntervalUnit.month), "Food": (None, None)}
+    cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(label)")}
+    assert "frequency" not in cols

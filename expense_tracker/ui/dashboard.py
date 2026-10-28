@@ -10,37 +10,44 @@ from nicegui import ui
 
 from ..services import analytics, cards, ledger
 from ..services.money import fmt
-from .layout import frame
+from .layout import frame, is_dark
 
 PERIODS = {"this_month": "This month", "last_month": "Last month", "3m": "Last 3 months",
            "6m": "Last 6 months", "12m": "Last 12 months", "ytd": "This year", "all": "All time"}
 PERIOD_SHORT = {"this_month": "This month", "last_month": "Last month", "3m": "3M", "6m": "6M",
                 "12m": "12M", "ytd": "YTD", "all": "All"}
-ACCENT = "#34e0a1"         # thin lines / "this month"
-BAR_GREEN = "#1d9e74"      # filled single-series bars: deeper so they do not outshine the hero
-BASELINE_GRAY = "#5d6378"  # comparison series
-SURFACE = "#12141c"        # gap between stacked segments
-GRID = "rgba(255,255,255,0.06)"
-TEXT_MUTED = "#a3a8ba"
+# Chart colours per theme (Plotly draws server-side, so CSS tokens don't reach it).
+CHART = {
+    "light": dict(accent="#007d56", bar="#007d56", baseline="#b4b9b6", surface="#ffffff", grid="#eef0ef",
+                  axis="#dfe3e0", muted="#686c69", faint="#8c918e", fill="rgba(0,125,86,0.07)",
+                  hover_bg="#171a18", hover_fg="#ffffff", ink="#171a18"),
+    "dark": dict(accent="#3fbf8c", bar="#2f9e72", baseline="#58605b", surface="#141715", grid="#222624",
+                 axis="#2a2f2c", muted="#a3a8a5", faint="#7c827e", fill="rgba(63,191,140,0.10)",
+                 hover_bg="#eceeed", hover_fg="#0f1110", ink="#eceeed"),
+}
+
+
+def _c() -> dict:
+    return CHART["dark" if is_dark() else "light"]
 
 
 def _rupees(v: float) -> str:
-    return f"₹{v:,.0f}"
+    return f"−₹{-v:,.0f}" if round(v) < 0 else f"₹{v:,.0f}"
 
 
 def _style(fig: go.Figure, height: int = 320, legend: bool = False) -> go.Figure:
     fig.update_layout(
-        template="plotly_dark", height=height, margin=dict(l=8, r=8, t=8, b=8),
-        font=dict(family="Inter, system-ui, sans-serif", size=12, color=TEXT_MUTED),
+        template="plotly_dark" if is_dark() else "plotly_white", height=height, margin=dict(l=8, r=8, t=8, b=8),
+        font=dict(family="Geist, Inter, system-ui, sans-serif", size=12, color=_c()["muted"]),
         showlegend=legend,
         legend=dict(orientation="h", yanchor="bottom", y=1.02, x=0, title_text="", font=dict(size=11)),
-        hoverlabel=dict(bgcolor="#232736", font_color="#eceef5", bordercolor="rgba(255,255,255,0.13)",
+        hoverlabel=dict(bgcolor=_c()["hover_bg"], font_color=_c()["hover_fg"], bordercolor=_c()["hover_bg"],
                         font_family="Inter, system-ui, sans-serif"),
         bargap=0.38, paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
     )
-    fig.update_xaxes(showgrid=False, linecolor=GRID, title_text="", tickfont=dict(color="#6d7288"))
-    fig.update_yaxes(gridcolor=GRID, zeroline=False, title_text="", tickprefix="₹", tickformat="~s",
-                     tickfont=dict(color="#6d7288"))
+    fig.update_xaxes(showgrid=False, linecolor=_c()["axis"], title_text="", tickfont=dict(color=_c()["faint"]))
+    fig.update_yaxes(gridcolor=_c()["grid"], zeroline=False, title_text="", tickprefix="₹", tickformat="~s",
+                     tickfont=dict(color=_c()["faint"]))
     return fig
 
 
@@ -60,28 +67,49 @@ def _empty(text: str = "No spend in this period.") -> None:
         ui.label(text).classes("et-muted text-sm")
 
 
-def _sparkline(values: list[float], width: int = 260, height: int = 56) -> str:
-    """Inline SVG area sparkline (no axes) for the hero tile."""
-    if len(values) < 2 or max(values) <= 0:
-        return ""
-    top = max(values)
-    step = width / (len(values) - 1)
-    pts = [(i * step, height - 4 - (v / top) * (height - 10)) for i, v in enumerate(values)]
-    line = " ".join(f"{x:.1f},{y:.1f}" for x, y in pts)
-    area = f"0,{height} {line} {width},{height}"
-    lx, ly = pts[-1]
-    return (
-        f'<svg width="100%" height="{height}" viewBox="0 0 {width} {height}" preserveAspectRatio="none">'
-        '<defs><linearGradient id="sg" x1="0" y1="0" x2="0" y2="1">'
-        '<stop offset="0" stop-color="#34e0a1" stop-opacity="0.40"/>'
-        '<stop offset="1" stop-color="#34e0a1" stop-opacity="0"/></linearGradient>'
-        '<linearGradient id="sl" x1="0" y1="0" x2="1" y2="0">'
-        '<stop offset="0" stop-color="#0fb39b"/><stop offset="1" stop-color="#8af8c8"/></linearGradient></defs>'
-        f'<polygon points="{area}" fill="url(#sg)"/>'
-        f'<polyline points="{line}" fill="none" stroke="url(#sl)" stroke-width="2" '
-        'stroke-linejoin="round" stroke-linecap="round" vector-effect="non-scaling-stroke"/>'
-        f'<circle cx="{lx:.1f}" cy="{ly:.1f}" r="3.5" fill="#8af8c8"/></svg>'
+def _iso(index: pd.DatetimeIndex) -> list[str]:
+    """Dates as ISO strings (the chart payload can't carry pandas Timestamps)."""
+    return [d.strftime("%Y-%m-%d") for d in index]
+
+
+def _hero_trend(series: pd.Series, daily: bool) -> None:
+    """Plotly trend inside the emerald hero tile: monthly spend as an area line,
+    or for one-month periods the running total by day. Drawn in white on the
+    tile's own colour, with exact values on hover."""
+    if len(series) < 2 or series.max() <= 0:
+        return
+    if daily:
+        x, y = _iso(series.index), series.cumsum().tolist()
+        hover, tick = "%{x|%d %b}: ₹%{y:,.0f} so far<extra></extra>", "%d %b"
+    else:
+        x, y = _iso(series.index.to_timestamp()), series.tolist()
+        hover, tick = "%{x|%b %Y}: ₹%{y:,.0f}<extra></extra>", "%b"
+    fig = go.Figure(go.Scatter(
+        x=x, y=y, mode="lines" if daily else "lines+markers",
+        line=dict(color="#ffffff", width=2.5, shape="linear" if daily else "spline", smoothing=0.6),
+        marker=dict(size=6, color="#ffffff"),
+        fill="tozeroy", fillgradient=dict(type="vertical", colorscale=[
+            [0, "rgba(255,255,255,0)"], [1, "rgba(255,255,255,0.28)"]]),
+        hovertemplate=hover,
+    ))
+    # Emphasise the latest point.
+    fig.add_scatter(x=[x[-1]], y=[y[-1]], mode="markers", hoverinfo="skip",
+                    marker=dict(size=11, color="#ffffff", line=dict(color="rgba(255,255,255,0.35)", width=6)))
+    fig.update_layout(
+        height=120, margin=dict(l=4, r=8, t=8, b=0), showlegend=False, hovermode="x",
+        paper_bgcolor="rgba(0,0,0,0)", plot_bgcolor="rgba(0,0,0,0)",
+        font=dict(family="Geist, Inter, system-ui, sans-serif", size=11, color="rgba(255,255,255,0.72)"),
+        hoverlabel=dict(bgcolor="#ffffff", font_color="#0f1110", bordercolor="#ffffff"),
     )
+    fig.update_xaxes(showgrid=False, zeroline=False, showline=False, tickformat=tick, ticks="", fixedrange=True,
+                     **(dict(nticks=7) if daily else dict(tickvals=x)))
+    # Pad the ends so the first/last month labels and the end marker aren't clipped.
+    pad = pd.Timedelta(days=1 if daily else 12)
+    fig.update_xaxes(range=[(pd.Timestamp(x[0]) - pad).strftime("%Y-%m-%d"),
+                            (pd.Timestamp(x[-1]) + pad).strftime("%Y-%m-%d")])
+    # Start at zero so heights compare honestly; headroom for the end marker.
+    fig.update_yaxes(visible=False, range=[0, max(y) * 1.15], fixedrange=True)
+    ui.plotly(fig).classes("w-full mt-2")
 
 
 def _kpi(title: str, value: str, icon: str, sub: str = "", sub_class: str = "et-faint") -> None:
@@ -95,8 +123,8 @@ def _kpi(title: str, value: str, icon: str, sub: str = "", sub_class: str = "et-
             ui.label(sub).classes(f"text-xs mt-1 {sub_class}")
 
 
-def _hero_kpi(title: str, total: float, change: float | None, prev: float, spark: list[float],
-              count: int, per_day: float) -> None:
+def _hero_kpi(title: str, total: float, change: float | None, prev: float, trend: pd.Series,
+              daily: bool, count: int, per_day: float) -> None:
     with ui.card().classes("et-kpi hero et-rise flex-[1.6] min-w-80 flex flex-col"):
         with ui.row().classes("w-full items-center justify-between no-wrap"):
             ui.label(title).classes("et-muted text-sm font-medium")
@@ -105,11 +133,10 @@ def _hero_kpi(title: str, total: float, change: float | None, prev: float, spark
                 ui.html(f'<span class="et-delta {"up" if up else "down"}">{"▲" if up else "▼"} '
                         f'{abs(change):.0f}% vs previous</span>', sanitize=False).tooltip(
                     f"Previous period: {_rupees(prev)}")
-        ui.label(_rupees(total)).classes("et-kpi-value et-num et-grad-text mt-3").style("font-size: 40px")
+        ui.label(_rupees(total)).classes("et-kpi-value et-num mt-4")
         ui.space()
-        if svg := _sparkline(spark, height=90):
-            ui.html(svg, sanitize=False).classes("w-full mt-2")
-        with ui.row().classes("w-full gap-6 pt-3 mt-1").style("border-top: 1px solid var(--border)"):
+        _hero_trend(trend, daily)
+        with ui.row().classes("w-full gap-6 pt-3 mt-1 et-hero-rule"):
             for value, label in ((f"{count:,}", "transactions"), (_rupees(per_day), "per day")):
                 with ui.column().classes("gap-0"):
                     ui.label(value).classes("et-num font-semibold")
@@ -148,12 +175,40 @@ def spend_over_time(df: pd.DataFrame, period: analytics.Period | None) -> None:
         for label in label_order:
             part = grouped[grouped["label"] == label]
             fig.add_bar(x=part["bucket"], y=part["amount"], name=label, marker_color=part["color"].iloc[0],
-                        marker_line=dict(color=SURFACE, width=1.5),
+                        marker_line=dict(color=_c()["surface"], width=1.5),
                         hovertemplate=f"<b>{label}</b><br>%{{x}}: ₹%{{y:,.0f}}<extra></extra>")
         _style(fig, height=340, legend=True)
         fig.update_layout(barmode="stack")
         fig.update_traces(marker_cornerradius=4)
         fig.update_xaxes(categoryorder="array", categoryarray=buckets)
+        ui.plotly(fig).classes("w-full")
+
+
+def cash_flow(spend: pd.DataFrame, income: pd.DataFrame, period: analytics.Period | None) -> None:
+    with _chart_card("Money in vs out", "Income and spend per month; the line is what you kept"):
+        if spend.empty and income.empty:
+            return _empty("No income or spend in this period.")
+        # From the first month with either income or spend.
+        first = min(f["date"].min() for f in (spend, income) if not f.empty).date().replace(day=1)
+        end = period.end if period else date.today() + timedelta(days=1)
+        shown = analytics.Period(max(first, period.start) if period else first, end)
+        out_m = analytics.monthly_totals(spend, shown, from_first_data=False)
+        in_m = analytics.monthly_totals(income, shown, from_first_data=False)
+        months = _iso(out_m.index.to_timestamp())
+        net = in_m - out_m
+        fig = go.Figure()
+        fig.add_bar(x=months, y=in_m.values, name="Income", marker_color=_c()["accent"],
+                    hovertemplate="Income: ₹%{y:,.0f}<extra></extra>")
+        fig.add_bar(x=months, y=out_m.values, name="Spend", marker_color=_c()["baseline"],
+                    hovertemplate="Spend: ₹%{y:,.0f}<extra></extra>")
+        fig.add_scatter(x=months, y=net.values, name="Kept", mode="lines+markers",
+                        line=dict(color=_c()["ink"], width=2), marker=dict(size=6),
+                        hovertemplate="Kept: ₹%{y:,.0f}<extra></extra>")
+        _style(fig, height=320, legend=True)
+        fig.update_traces(selector=dict(type="bar"), marker_cornerradius=4)
+        fig.update_layout(barmode="group", bargap=0.3, bargroupgap=0.08, hovermode="x unified")
+        fig.update_xaxes(tickformat="%b %Y", dtick="M1", hoverformat="%B %Y")
+        fig.update_yaxes(zeroline=True, zerolinecolor=_c()["axis"])
         ui.plotly(fig).classes("w-full")
 
 
@@ -185,8 +240,8 @@ def month_pace(account_id: int | None) -> None:
         if this.empty and last.empty:
             return _empty("No spend this month or last month.")
         fig = go.Figure()
-        for df, name, color, dash, upto in ((last, "Last month", BASELINE_GRAY, "dot", 31),
-                                            (this, "This month", ACCENT, "solid", today.day)):
+        for df, name, color, dash, upto in ((last, "Last month", _c()["baseline"], "dot", 31),
+                                            (this, "This month", _c()["accent"], "solid", today.day)):
             if df.empty:
                 continue
             daily = df.groupby(df["date"].dt.day)["amount"].sum().reindex(range(1, upto + 1), fill_value=0)
@@ -195,10 +250,10 @@ def month_pace(account_id: int | None) -> None:
             is_this = name == "This month"
             fig.add_scatter(x=cum.index, y=cum.values, name=name, mode="lines",
                             line=dict(color=color, width=2.5 if is_this else 2, dash=dash, shape="hv"),
-                            fill="tozeroy" if is_this else None, fillcolor="rgba(52,224,161,0.12)",
+                            fill="tozeroy" if is_this else None, fillcolor=_c()["fill"],
                             hovertemplate=f"{name}, day %{{x}}: ₹%{{y:,.0f}}<extra></extra>")
             fig.add_annotation(x=cum.index[-1], y=cum.values[-1], text=f"{name} {_rupees(cum.values[-1])}",
-                               showarrow=False, xanchor="left", xshift=6, font=dict(size=11, color=TEXT_MUTED))
+                               showarrow=False, xanchor="left", xshift=6, font=dict(size=11, color=_c()["muted"]))
         _style(fig, legend=True)
         fig.update_layout(hovermode="x unified", margin=dict(r=110))
         fig.update_xaxes(range=[1, 31], dtick=5, title_text="Day of month")
@@ -212,7 +267,7 @@ def top_merchants(df: pd.DataFrame, n: int = 10) -> None:
         top = (df.groupby("merchant").agg(amount=("amount", "sum"), count=("amount", "size"))
                  .sort_values("amount", ascending=False).head(n).iloc[::-1])
         fig = go.Figure(go.Bar(
-            x=top["amount"], y=top.index, orientation="h", marker_color=BAR_GREEN,
+            x=top["amount"], y=top.index, orientation="h", marker_color=_c()["bar"],
             customdata=top["count"], text=top["amount"].map(_rupees), textposition="outside", cliponaxis=False,
             hovertemplate="<b>%{y}</b><br>₹%{x:,.0f} over %{customdata} payments<extra></extra>",
         ))
@@ -229,7 +284,7 @@ def by_account(df: pd.DataFrame) -> None:
             return _empty()
         totals = df.groupby("account")["amount"].sum().sort_values()
         fig = go.Figure(go.Bar(
-            x=totals.values, y=totals.index, orientation="h", marker_color=BAR_GREEN,
+            x=totals.values, y=totals.index, orientation="h", marker_color=_c()["bar"],
             text=[_rupees(v) for v in totals.values], textposition="outside", cliponaxis=False,
             hovertemplate="<b>%{y}</b><br>₹%{x:,.0f}<extra></extra>",
         ))
@@ -271,8 +326,8 @@ def dashboard_page() -> None:
         with ui.row().classes("w-full items-center gap-4"):
             ui.toggle(PERIOD_SHORT, value=state["period"],
                       on_change=lambda e: (state.update(period=e.value), content.refresh())) \
-                .props("unelevated rounded no-caps toggle-color=primary toggle-text-color=dark color=transparent text-color=grey-5 "
-                       "padding='6px 14px'").classes("et-card")
+                .props("unelevated no-caps toggle-color=primary color=transparent text-color=grey-8 "
+                       "padding='6px 14px'").classes("et-segment")
             ui.space()
             ui.select({None: "All accounts"} | accounts, value=None,
                       on_change=lambda e: (state.update(account=e.value), content.refresh())) \
@@ -289,14 +344,11 @@ def dashboard_page() -> None:
                 prev = analytics.spend_frame(period.previous(), state["account"])["amount"].sum()
                 if prev:
                     change = (total - prev) / prev * 100
-            daily = period is not None and period.days <= 62
-            # Short periods: running total by day; longer: one point per month.
-            if df.empty:
-                spark = []
-            elif daily:
-                spark = df.groupby(df["date"].dt.normalize())["amount"].sum().cumsum().tolist()
-            else:
-                spark = df.groupby(df["date"].dt.to_period("M"))["amount"].sum().tolist()
+            income = analytics.income_frame(period, state["account"])
+            earned = income["amount"].sum() if not income.empty else 0
+            # One-month periods: running total by day; longer: one point per month.
+            daily = period is not None and period.days <= 31
+            trend = analytics.daily_totals(df, period) if daily else analytics.monthly_totals(df, period)
             labelled = df[df["label"] != analytics.UNLABELLED]
             top = (labelled.groupby("label")["amount"].sum().sort_values(ascending=False) if not labelled.empty
                    else pd.Series(dtype=float))
@@ -304,9 +356,15 @@ def dashboard_page() -> None:
             unlabelled = int((df["label"] == analytics.UNLABELLED).sum()) if not df.empty else 0
 
             with ui.row().classes("w-full gap-4 items-stretch"):
-                _hero_kpi(f"Spent · {PERIODS[state['period']].lower()}", total, change, prev, spark,
+                _hero_kpi(f"Spent · {PERIODS[state['period']].lower()}", total, change, prev, trend, daily,
                           len(df), total / _days_elapsed(df, period))
-                with ui.element("div").classes("grid grid-cols-2 gap-4 flex-[2] min-w-[30rem]"):
+                kept = earned - total
+                with ui.element("div").classes("grid grid-cols-2 2xl:grid-cols-3 gap-4 flex-[2] min-w-[30rem]"):
+                    _kpi("Income", _rupees(earned), "south_west",
+                         f"{len(income)} credit{'s' if len(income) != 1 else ''} marked income")
+                    _kpi("Kept", _rupees(kept), "savings",
+                         f"{kept / earned * 100:.0f}% of income" if earned else "no income in this period",
+                         "et-warn" if kept < 0 else "et-faint")
                     _kpi("Average per month", _rupees(total / _months_in(df, period)), "insights",
                          "net of reimbursements & refunds")
                     _kpi("Biggest label", top.index[0] if len(top) else "—", "local_offer",
@@ -321,6 +379,7 @@ def dashboard_page() -> None:
                 with ui.element("div").classes("xl:col-span-2"):
                     spend_over_time(df, period)
                 by_label(df)
+            cash_flow(df, income, period)
             with ui.element("div").classes("grid grid-cols-1 xl:grid-cols-2 gap-4 w-full"):
                 month_pace(state["account"])
                 top_merchants(df)
