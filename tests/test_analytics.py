@@ -122,3 +122,30 @@ def test_label_totals_folds_the_tail_into_miscellaneous():
     assert top["amount"].iloc[-1] == 40 and round(top["share"].sum()) == 100
     assert len(label_totals(df)) == 7
     assert MISC not in label_totals(df.head(6), top=5)["label"].tolist()  # one extra label isn't folded
+
+
+def test_comparable_previous_cuts_a_running_period():
+    from expensekrafter.services.analytics import Period, comparable_previous
+
+    oct_ = Period(date(2026, 10, 1), date(2026, 11, 1))
+    assert comparable_previous(oct_, today=date(2026, 10, 10)) == Period(date(2026, 8, 31), date(2026, 9, 10))
+    done = Period(date(2026, 9, 1), date(2026, 10, 1))
+    assert comparable_previous(done, today=date(2026, 10, 10)) == done.previous()
+
+
+def test_label_changes_and_daily_spend():
+    import pandas as pd
+
+    from expensekrafter.services.analytics import daily_spend, label_changes
+
+    def frame(rows):
+        return pd.DataFrame([{"label": lab, "amount": amt, "date": pd.Timestamp(d)} for lab, amt, d in rows])
+
+    now = frame([("Food", 900, "2026-10-01"), ("Food", 100, "2026-10-01"), ("Travel", 200, "2026-10-03"),
+                 ("Rent", 500, "2026-10-03")])
+    before = frame([("Food", 400, "2026-09-01"), ("Travel", 700, "2026-09-02"), ("Rent", 500, "2026-09-03")])
+    ch = label_changes(now, before)
+    assert ch["label"].tolist() == ["Food", "Travel"]  # unchanged Rent is left out
+    assert ch["change"].tolist() == [600, -500]
+    days = daily_spend(now, date(2026, 10, 1), date(2026, 10, 5))
+    assert days["amount"].tolist() == [1000, 0, 700, 0] and days["count"].tolist() == [2, 0, 2, 0]

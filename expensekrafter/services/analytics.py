@@ -201,6 +201,40 @@ def label_totals(df: pd.DataFrame, top: int | None = None) -> pd.DataFrame:
     return totals
 
 
+def comparable_previous(period: Period, today: date | None = None) -> Period:
+    """The period to compare `period` with. For a period still running, only the
+    same number of days of the previous one, so a half-finished month isn't
+    measured against a whole one."""
+    today = today or date.today()
+    prev = period.previous()
+    elapsed = (min(period.end, today + timedelta(days=1)) - period.start).days
+    return Period(prev.start, prev.start + timedelta(days=max(elapsed, 1)))
+
+
+def label_changes(now: pd.DataFrame, before: pd.DataFrame, n: int = 8) -> pd.DataFrame:
+    """Spend per label now vs before (label, now, before, change), the `n`
+    biggest moves either way, biggest rise first."""
+    cols = ["label", "now", "before", "change"]
+    sums = [f.groupby("label")["amount"].sum() if not f.empty else pd.Series(dtype=float) for f in (now, before)]
+    out = pd.concat(sums, axis=1, keys=["now", "before"]).fillna(0.0)
+    out["change"] = out["now"] - out["before"]
+    out = out[out["change"].round() != 0]
+    if out.empty:
+        return pd.DataFrame(columns=cols)
+    out = out.loc[out["change"].abs().sort_values(ascending=False).index[:n]]
+    return out.sort_values("change", ascending=False).rename_axis("label").reset_index()[cols]
+
+
+def daily_spend(df: pd.DataFrame, start: date, end: date) -> pd.DataFrame:
+    """One row per day from start to end (exclusive): date, amount, count."""
+    days = pd.date_range(start, end - timedelta(days=1), freq="D")
+    if df.empty:
+        return pd.DataFrame({"date": days, "amount": 0.0, "count": 0})
+    g = df.groupby(df["date"].dt.normalize())["amount"].agg(["sum", "size"])
+    g = g.reindex(days, fill_value=0)
+    return pd.DataFrame({"date": days, "amount": g["sum"].astype(float).values, "count": g["size"].values})
+
+
 def recurring_items(months: int = 12) -> pd.DataFrame:
     """Transactions under recurring labels, collapsed per merchant: last
     amount, last date, how often it was seen and the yearly cost estimate."""

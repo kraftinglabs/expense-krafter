@@ -20,11 +20,15 @@ PERIOD_SHORT = {"this_month": "This month", "last_month": "Last month", "3m": "3
 CHART = {
     "light": dict(accent="#007d56", bar="#007d56", baseline="#b4b9b6", surface="#ffffff", grid="#eef0ef",
                   axis="#dfe3e0", muted="#686c69", faint="#8c918e", fill="rgba(0,125,86,0.07)",
-                  hover_bg="#171a18", hover_fg="#ffffff", ink="#171a18"),
+                  hover_bg="#171a18", hover_fg="#ffffff", ink="#171a18",
+                  up="#D55E00", down="#0072B2", empty="#f1f3f2", heat_lo="#cfe9dd"),
     "dark": dict(accent="#3fbf8c", bar="#2f9e72", baseline="#58605b", surface="#141715", grid="#222624",
                  axis="#2a2f2c", muted="#a3a8a5", faint="#7c827e", fill="rgba(63,191,140,0.10)",
-                 hover_bg="#eceeed", hover_fg="#0f1110", ink="#eceeed"),
+                 hover_bg="#eceeed", hover_fg="#0f1110", ink="#eceeed",
+                 up="#E69F00", down="#56B4E9", empty="#1c201e", heat_lo="#1f4a38"),
 }
+# More / less spend than before: Okabe-Ito vermillion (orange on dark) and blue,
+# colour-blind safe, and always paired with a +/− sign in the text.
 
 
 def _c() -> dict:
@@ -324,11 +328,131 @@ def by_label(df: pd.DataFrame) -> None:
         body()
 
 
+def _signed(v: float) -> str:
+    return f"+₹{v:,.0f}" if v > 0 else f"−₹{-v:,.0f}"
+
+
+def what_changed(df: pd.DataFrame, period: analytics.Period | None, account_id: int | None) -> None:
+    if period is None:
+        with _chart_card("What changed", "Spend per label vs the previous period"):
+            return _empty("Pick a time period to compare it with the one before.")
+    compare = analytics.comparable_previous(period)
+    running = compare.days < period.days
+    before = analytics.spend_frame(compare, account_id)
+    subtitle = (f"Spend per label vs the first {compare.days} days of the previous period" if running
+                else "Spend per label vs the previous period")
+    with _chart_card("What changed", subtitle):
+        if before.empty:  # every label would show as a pure rise
+            return _empty("No spend recorded in the previous period to compare with.")
+        changes = analytics.label_changes(df, before)
+        if changes.empty:
+            return _empty("No change from the previous period.")
+        rows = changes.iloc[::-1]  # biggest rise on top
+        colors = [_c()["up"] if v > 0 else _c()["down"] for v in rows["change"]]
+        fig = go.Figure(go.Bar(
+            x=rows["change"], y=rows["label"], orientation="h", marker_color=colors,
+            text=[_signed(v) for v in rows["change"]], textposition="outside", cliponaxis=False,
+            customdata=list(zip(rows["now"].map(_rupees), rows["before"].map(_rupees))),
+            hovertemplate="<b>%{y}</b><br>Now %{customdata[0]}, before %{customdata[1]}<extra></extra>",
+        ))
+        _style(fig, height=max(220, 34 * len(rows) + 40))
+        fig.update_traces(marker_cornerradius=4)
+        lo, hi = rows["change"].min(), rows["change"].max()
+        pad = (max(hi, 0) - min(lo, 0)) * 0.35  # room for the value text
+        fig.update_xaxes(visible=False, range=[lo - pad if lo < 0 else 0, hi + pad if hi > 0 else 0])
+        fig.update_yaxes(gridcolor="rgba(0,0,0,0)", tickprefix="")
+        fig.add_vline(x=0, line=dict(color=_c()["axis"], width=1))
+        ui.plotly(fig).classes("w-full")
+        up, down = changes["change"].clip(lower=0).sum(), -changes["change"].clip(upper=0).sum()
+        ui.label(f"▲ {_rupees(up)} more on {int((changes['change'] > 0).sum())} labels · "
+                 f"▼ {_rupees(down)} less on {int((changes['change'] < 0).sum())}").classes("et-faint text-xs")
+
+
+CALENDAR_MAX_DAYS = 371  # 53 weeks; longer periods show their latest year
+
+
+def spending_calendar(df: pd.DataFrame, period: analytics.Period | None) -> None:
+    today = date.today()
+    end = min(period.end, today + timedelta(days=1)) if period else today + timedelta(days=1)
+    first = period.start if period else (df["date"].min().date() if not df.empty else end)
+    start = max(first, end - timedelta(days=CALENDAR_MAX_DAYS))
+    note = " (latest year)" if start > first else ""
+    with _chart_card("Spending calendar", f"Spend per day, by week{note}; darker is more"):
+        if df.empty or start >= end:
+            return _empty()
+        days = analytics.daily_spend(df, start, end)
+        days["week"] = days["date"] - pd.to_timedelta(days["date"].dt.weekday, unit="D")
+        weeks = sorted(pd.Timestamp(w) for w in days["week"].unique())
+        weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
+        z = [[None] * len(weeks) for _ in weekdays]
+        text = [[""] * len(weeks) for _ in weekdays]
+        col = {w: i for i, w in enumerate(weeks)}
+        for r in days.itertuples():
+            i, j = r.date.weekday(), col[r.week]
+            z[i][j] = r.amount
+            text[i][j] = (f"{r.date:%a %d %b %Y}<br>₹{r.amount:,.0f} · {r.count} payment{'s' if r.count != 1 else ''}"
+                          if r.count else f"{r.date:%a %d %b %Y}<br>No spend")
+        # Cap the scale at the 95th percentile so one rent day doesn't wash out the rest.
+        spent = days.loc[days["amount"] > 0, "amount"]
+        cap = float(spent.quantile(0.95)) if len(spent) else 1.0
+        fig = go.Figure(go.Heatmap(
+            z=z, x=_iso(pd.DatetimeIndex(weeks)), y=weekdays, text=text, hovertemplate="%{text}<extra></extra>",
+            colorscale=[[0, _c()["empty"]], [0.001, _c()["heat_lo"]], [1, _c()["accent"]]], zmin=0, zmax=max(cap, 1),
+            xgap=3, ygap=3, showscale=False,
+        ))
+        _style(fig, height=230)
+        fig.update_yaxes(autorange="reversed", gridcolor="rgba(0,0,0,0)", tickprefix="", tickformat="",
+                         fixedrange=True)
+        fig.update_xaxes(tickformat="%d %b", nticks=8, linecolor="rgba(0,0,0,0)", fixedrange=True)
+        ui.plotly(fig).classes("w-full")
+        by_day = days.assign(wd=days["date"].dt.weekday).groupby("wd")["amount"].mean()
+        busiest = weekdays[int(by_day.idxmax())] if by_day.max() > 0 else None
+        quiet = int((days["count"] == 0).sum())
+        if busiest:
+            ui.label(f"Most on {busiest}s on average ({_rupees(by_day.max())}) · "
+                     f"{quiet} of {len(days)} days with no spend").classes("et-faint text-xs")
+
+
+def largest_expenses(df: pd.DataFrame, n: int = 10) -> None:
+    with _chart_card("Largest expenses", f"The {n} biggest single payments in this period"):
+        if df.empty:
+            return _empty()
+        top = df.nlargest(n, "amount")
+        total = df["amount"].sum()
+        table = ui.table(
+            columns=[
+                {"name": "date", "label": "Date", "field": "date", "align": "left"},
+                {"name": "merchant", "label": "Paid to", "field": "merchant", "align": "left"},
+                {"name": "label", "label": "Label", "field": "label", "align": "left"},
+                {"name": "account", "label": "Account", "field": "account", "align": "left"},
+                {"name": "amount", "label": "Amount", "field": "amount", "align": "right"},
+            ],
+            rows=[{"date": r.date.strftime("%d %b %Y"), "merchant": r.merchant, "label": r.label,
+                   "color": r.color, "account": r.account, "amount": _rupees(r.amount)} for r in top.itertuples()],
+        ).props("flat dense").classes("w-full")
+        table.add_slot("body-cell-label", r'''
+            <q-td :props="props">
+              <span class="inline-block w-2 h-2 rounded-full mr-2" :style="{background: props.row.color}"></span>
+              {{ props.value }}
+            </q-td>''')
+        table.add_slot("body-cell-merchant", r'''
+            <q-td :props="props"><div class="truncate max-w-32">{{ props.value }}</div></q-td>''')
+        if total > 0:
+            ui.label(f"These {len(top)} make up {top['amount'].sum() / total * 100:.0f}% of the period's spend") \
+                .classes("et-faint text-xs")
+
+
 def month_pace(account_id: int | None) -> None:
     today = date.today()
     this = analytics.spend_frame(analytics.period_for("this_month"), account_id)
     last = analytics.spend_frame(analytics.period_for("last_month"), account_id)
-    with _chart_card("This month vs last month", "Cumulative spend by day of month"):
+    month_days = analytics.period_for("this_month").days
+    spent = this["amount"].sum() if not this.empty else 0.0
+    projected = spent / today.day * month_days
+    subtitle = "Cumulative spend by day of month"
+    if spent > 0 and today.day < month_days:
+        subtitle = f"Cumulative spend by day; at this pace about {_rupees(projected)} by month end"
+    with _chart_card("This month vs last month", subtitle):
         if this.empty and last.empty:
             return _empty("No spend this month or last month.")
         fig = go.Figure()
@@ -346,6 +470,10 @@ def month_pace(account_id: int | None) -> None:
                             hovertemplate=f"{name}, day %{{x}}: ₹%{{y:,.0f}}<extra></extra>")
             fig.add_annotation(x=cum.index[-1], y=cum.values[-1], text=f"{name} {_rupees(cum.values[-1])}",
                                showarrow=False, xanchor="left", xshift=6, font=dict(size=11, color=_c()["muted"]))
+        if spent > 0 and today.day < month_days:  # straight-line projection from today to month end
+            fig.add_scatter(x=[today.day, month_days], y=[spent, projected], name="At this pace", mode="lines",
+                            line=dict(color=_c()["accent"], width=1.5, dash="dash"),
+                            hovertemplate="At this pace, day %{x}: ₹%{y:,.0f}<extra></extra>")
         _style(fig, legend=True)
         fig.update_layout(hovermode="x unified", margin=dict(r=110))
         fig.update_xaxes(range=[1, 31], dtick=5, title_text="Day of month")
@@ -485,9 +613,13 @@ def dashboard_page() -> None:
                 cash_flow(df, income, period)
                 balance_chart(balances, period)
             with ui.element("div").classes("grid grid-cols-1 xl:grid-cols-2 gap-4 w-full"):
+                what_changed(df, period, state["account"])
+                spending_calendar(df, period)
+            with ui.element("div").classes("grid grid-cols-1 xl:grid-cols-2 gap-4 w-full"):
                 month_pace(state["account"])
                 top_merchants(df)
+                largest_expenses(df)
                 by_account(df)
-                recurring()
+            recurring()
 
         content()
