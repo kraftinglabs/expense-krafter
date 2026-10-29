@@ -15,10 +15,16 @@ import importlib.util
 import os
 import sys
 
+from .config import CONFIG_DIR, adopt_legacy_install, override_data_dir, reload_settings, settings
+
+# NiceGUI keeps sign-in sessions and UI choices in ./.nicegui by default, which
+# isn't writable when the app is installed under Program Files. Must be set
+# before nicegui is imported.
+os.environ.setdefault("NICEGUI_STORAGE_PATH", str(CONFIG_DIR / "nicegui"))
+
 from nicegui import app, background_tasks, ui
 from sqlmodel import select
 
-from .config import adopt_legacy_install, override_data_dir, reload_settings, settings
 from .db import get_session, init_db
 from .db.models import IntervalUnit, Label
 from .db.session import acquire_lock, adopt_legacy_db, backup_db, release_lock
