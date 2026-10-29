@@ -9,17 +9,15 @@ from itertools import groupby
 
 from nicegui import ui
 
-from ..db.models import Direction, TxnKind
+from ..db.models import Direction
 from ..services import ledger, narration
 from ..services.analytics import merchant_name
 from ..services.money import fmt
 from . import icons
 from .layout import frame
 
-KIND_LABELS = {
-    TxnKind.expense: "Expense", TxnKind.income: "Income", TxnKind.transfer: "Transfer",
-    TxnKind.cc_payment: "Card payment", TxnKind.reimbursement: "Reimbursement", TxnKind.refund: "Refund",
-}
+KIND_LABELS = ledger.KIND_LABELS
+DIRECTIONS = {None: "All", "debit": "Money out", "credit": "Money in"}
 
 
 def _amount(minor: int, direction: Direction) -> tuple[str, str]:
@@ -48,24 +46,82 @@ def _avatar(description: str, color: str | None) -> None:
 def transactions_page() -> None:
     with frame("Transactions", "Label, group and annotate everything you've imported"):
         accounts = {a.id: a.name for a in ledger.accounts()}
-        state: dict = {"account": None, "unlabelled": False, "selected": set(), "open": set()}
+        f = ledger.TxnFilter()
+        state: dict = {"selected": set(), "open": set()}
 
-        with ui.row().classes("w-full items-center gap-4"):
+        def apply() -> None:
+            n = f.extra_count()
+            filters_btn.text = f"Filters · {n}" if n else "Filters"
+            filters_btn.props(f"color={'primary' if n else 'grey-8'}")
+            months.refresh()
+
+        with ui.row().classes("w-full items-center gap-3"):
+            search = ui.input(placeholder="Search name, details, notes, label, amount…",
+                              on_change=lambda e: (setattr(f, "search", e.value or ""), apply())) \
+                .props("outlined dense clearable debounce=300").classes("w-80")
+            with search.add_slot("prepend"):
+                ui.icon("search")
             ui.select({None: "All accounts"} | accounts, value=None,
-                      on_change=lambda e: (state.update(account=e.value), months.refresh())) \
-                .props("outlined dense options-dense").classes("w-56")
-            ui.switch("Unlabelled only", on_change=lambda e: (state.update(unlabelled=e.value), months.refresh())) \
+                      on_change=lambda e: (setattr(f, "account_id", e.value), apply())) \
+                .props("outlined dense options-dense").classes("w-52")
+            filters_btn = ui.button("Filters", icon="tune", on_click=lambda: panel.set_visibility(not panel.visible)) \
+                .props("outline color=grey-8")
+            ui.switch("Unlabelled only", on_change=lambda e: (setattr(f, "unlabelled_only", e.value), apply())) \
                 .classes("et-muted")
             ui.space()
             selection_label = ui.label().classes("text-sm et-muted")
             group_btn = ui.button("Group selected", icon="merge", on_click=lambda: group_dialog()).props("outline")
             ungroup_btn = ui.button("Ungroup", icon="call_split", on_click=lambda: ungroup()).props("outline")
 
+        with ui.card().classes("w-full gap-4") as panel:
+            with ui.row().classes("w-full items-end gap-4 flex-wrap"):
+                kinds = ui.select({k.value: v for k, v in KIND_LABELS.items()}, multiple=True, label="Type",
+                                  on_change=lambda e: (setattr(f, "kinds", set(e.value or [])), apply())) \
+                    .props("outlined dense options-dense use-chips clearable").classes("w-60")
+                label_pick = ui.select({ledger.NO_LABEL: "No label"} | {lab.id: lab.name for lab in ledger.labels()},
+                                       multiple=True, label="Label", with_input=True,
+                                       on_change=lambda e: (setattr(f, "label_ids", set(e.value or [])), apply())) \
+                    .props("outlined dense options-dense use-chips clearable").classes("w-72")
+                direction = ui.toggle(DIRECTIONS, value=None,
+                                      on_change=lambda e: (setattr(f, "direction", e.value), apply())) \
+                    .props("unelevated no-caps toggle-color=primary color=transparent text-color=grey-8 "
+                           "padding='6px 12px'").classes("et-segment")
+            with ui.row().classes("w-full items-end gap-4 flex-wrap"):
+                def on_date(attr: str, value: str | None) -> None:
+                    setattr(f, attr, date.fromisoformat(value) if value else None)
+                    apply()
+
+                date_from = ui.input("From", on_change=lambda e: on_date("date_from", e.value)) \
+                    .props("outlined dense clearable type=date stack-label").classes("w-44")
+                date_to = ui.input("To", on_change=lambda e: on_date("date_to", e.value)) \
+                    .props("outlined dense clearable type=date stack-label").classes("w-44")
+
+                def on_amount(attr: str, value) -> None:
+                    setattr(f, attr, float(value) if value not in (None, "") else None)
+                    apply()
+
+                amount_min = ui.number("Min amount ₹", min=0, on_change=lambda e: on_amount("amount_min", e.value)) \
+                    .props("outlined dense clearable").classes("w-40")
+                amount_max = ui.number("Max amount ₹", min=0, on_change=lambda e: on_amount("amount_max", e.value)) \
+                    .props("outlined dense clearable").classes("w-40")
+                ui.space()
+
+                def clear_filters() -> None:
+                    for el in (kinds, label_pick):
+                        el.set_value([])
+                    for el in (date_from, date_to, amount_min, amount_max):
+                        el.set_value(None)
+                    direction.set_value(None)
+
+                ui.button("Clear filters", icon="filter_alt_off", on_click=clear_filters).props("flat")
+        panel.set_visibility(False)
+
         def update_selection() -> None:
             n = len(state["selected"])
             selection_label.text = f"{n} selected" if n else ""
-            group_btn.set_enabled(n >= 2)
-            ungroup_btn.set_enabled(n >= 1)
+            # Only shown while rows are ticked, so the toolbar fits on one line.
+            group_btn.set_visibility(n >= 2)
+            ungroup_btn.set_visibility(n >= 1)
 
         def toggle(txn_id: int, on: bool) -> None:
             (state["selected"].add if on else state["selected"].discard)(txn_id)
@@ -127,7 +183,7 @@ def transactions_page() -> None:
 
         def month_body(month: str, container: ui.element) -> None:
             container.clear()
-            txns = ledger.month_transactions(month, state["account"], state["unlabelled"])
+            txns = ledger.month_transactions(month, f)
             with container:
                 for day, items in groupby(txns, key=lambda t: t.txn_date):
                     items = list(items)
@@ -146,16 +202,24 @@ def transactions_page() -> None:
 
         @ui.refreshable
         def months() -> None:
-            summaries = ledger.month_summaries(state["account"], state["unlabelled"])
+            summaries = ledger.month_summaries(f)
+            narrowed = f.is_narrowed()
+            if narrowed:
+                count = sum(ms.count for ms in summaries)
+                with ui.row().classes("w-full items-center gap-3 px-1"):
+                    ui.label(f"{count} transaction{'s' if count != 1 else ''} match").classes("text-sm font-medium")
+                    _totals(sum(ms.debit_minor for ms in summaries), sum(ms.credit_minor for ms in summaries))
             if not summaries:
                 with ui.column().classes("w-full items-center py-16 gap-2"):
-                    ui.icon("receipt_long").classes("text-5xl et-faint")
-                    ui.label("No transactions for this filter.").classes("et-muted")
+                    ui.icon("search_off" if narrowed else "receipt_long").classes("text-5xl et-faint")
+                    ui.label("Nothing matches. Try fewer words or clear some filters." if narrowed
+                             else "No transactions yet.").classes("et-muted")
                 return
             if not state["open"]:
                 state["open"].add(summaries[0].month)  # newest month open by default
             for ms in summaries:
-                is_open = ms.month in state["open"]
+                # While searching or filtering, every matching month is shown open.
+                is_open = narrowed or ms.month in state["open"]
                 exp = ui.expansion(value=is_open).classes("w-full et-month et-rise")
                 with exp.add_slot("header"):
                     with ui.row().classes("w-full items-center gap-4"):

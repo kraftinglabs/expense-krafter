@@ -2,13 +2,15 @@
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import re
+from dataclasses import dataclass, field
 from datetime import date
 
 from sqlmodel import col, select
 
 from ..db import get_session
 from ..db.models import Account, Direction, ExpenseGroup, Label, Transaction, TxnKind
+from . import narration
 
 
 def accounts(active_only: bool = True) -> list[Account]:
@@ -22,6 +24,14 @@ def accounts(active_only: bool = True) -> list[Account]:
 def labels() -> list[Label]:
     with get_session() as s:
         return list(s.exec(select(Label).order_by(Label.name)).all())
+
+
+# Display names for transaction types (also what search matches on).
+KIND_LABELS = {
+    TxnKind.expense: "Expense", TxnKind.income: "Income", TxnKind.transfer: "Transfer",
+    TxnKind.cc_payment: "Card payment", TxnKind.reimbursement: "Reimbursement", TxnKind.refund: "Refund",
+}
+NO_LABEL = 0  # stands for "no label" in TxnFilter.label_ids
 
 
 @dataclass
@@ -38,6 +48,7 @@ class TxnRow:
     group_name: str
     notes: str
     account_id: int = 0
+    label_name: str = ""
 
 
 @dataclass
@@ -49,12 +60,89 @@ class MonthSummary:
     unlabelled: int
 
 
-def _filtered(q, account_id: int | None, unlabelled_only: bool):
-    if account_id:
-        q = q.where(Transaction.account_id == account_id)
-    if unlabelled_only:
+@dataclass
+class TxnFilter:
+    """What the Transactions page shows. Empty / None fields don't filter."""
+    account_id: int | None = None
+    unlabelled_only: bool = False
+    search: str = ""
+    kinds: set[str] = field(default_factory=set)        # TxnKind values
+    label_ids: set[int] = field(default_factory=set)    # label ids, NO_LABEL for unlabelled
+    direction: str | None = None                        # "debit" (money out) / "credit" (money in)
+    date_from: date | None = None
+    date_to: date | None = None                         # inclusive
+    amount_min: float | None = None                     # rupees
+    amount_max: float | None = None
+
+    def extra_count(self) -> int:
+        """How many filters beyond account / search / unlabelled are set (for the button badge)."""
+        return sum([bool(self.kinds), bool(self.label_ids), self.direction is not None,
+                    self.date_from is not None or self.date_to is not None,
+                    self.amount_min is not None or self.amount_max is not None])
+
+    def is_narrowed(self) -> bool:
+        return bool(self.search.strip() or self.extra_count() or self.unlabelled_only)
+
+
+def _where(q, f: TxnFilter):
+    if f.account_id:
+        q = q.where(Transaction.account_id == f.account_id)
+    if f.unlabelled_only:
         q = q.where(Transaction.label_id == None, Transaction.kind == TxnKind.expense)  # noqa: E711
+    if f.kinds:
+        q = q.where(col(Transaction.kind).in_([TxnKind(k) for k in f.kinds]))
+    if f.label_ids:
+        ids = [i for i in f.label_ids if i != NO_LABEL]
+        cond = col(Transaction.label_id).in_(ids)
+        if NO_LABEL in f.label_ids:
+            cond = cond | (Transaction.label_id == None)  # noqa: E711
+        q = q.where(cond)
+    if f.direction:
+        q = q.where(Transaction.direction == Direction(f.direction))
+    if f.date_from:
+        q = q.where(Transaction.txn_date >= f.date_from)
+    if f.date_to:
+        q = q.where(Transaction.txn_date <= f.date_to)
+    if f.amount_min is not None:
+        q = q.where(Transaction.amount_minor >= round(f.amount_min * 100))
+    if f.amount_max is not None:
+        q = q.where(Transaction.amount_minor <= round(f.amount_max * 100))
     return q
+
+
+def _haystack(t: TxnRow) -> str:
+    """Everything a search can match for one row, lower-cased."""
+    n = narration.parse(t.description)
+    rupees = t.amount_minor / 100
+    parts = [t.description, n.display, n.title, n.method, *n.details, n.ref, t.notes, t.label_name,
+             t.group_name, t.account, KIND_LABELS.get(t.kind, t.kind.value),
+             "money in" if t.direction == Direction.credit else "money out",
+             f"{rupees:.2f}", f"{rupees:,.2f}", f"{rupees:,.2f}".replace(",", "")]
+    return re.sub(r"\s+", " ", " ".join(p for p in parts if p)).lower()
+
+
+def matches_search(t: TxnRow, query: str) -> bool:
+    """Every word of the query must appear somewhere ('grab niyo', '1,417', 'upi sbi')."""
+    hay = _haystack(t)
+    return all(word in hay for word in query.lower().replace("₹", " ").split())
+
+
+def filtered_rows(f: TxnFilter, month: str | None = None) -> list[TxnRow]:
+    """Matching transactions, newest day first; optionally only one month."""
+    with get_session() as s:
+        q = (select(Transaction, Account.name, ExpenseGroup.name, Label.name)
+             .join(Account, Account.id == Transaction.account_id)
+             .outerjoin(ExpenseGroup, ExpenseGroup.id == Transaction.group_id)
+             .outerjoin(Label, Label.id == Transaction.label_id))
+        if month:
+            start, end = _month_bounds(month)
+            q = q.where(Transaction.txn_date >= start, Transaction.txn_date < end)
+        rows = s.exec(_where(q, f).order_by(col(Transaction.txn_date).desc(), Transaction.id)).all()
+    out = [TxnRow(t.id, t.txn_date, acc, t.description, t.amount_minor, t.direction, t.kind, t.label_id,
+                  t.group_id, grp or "", t.notes, t.account_id, lab or "") for t, acc, grp, lab in rows]
+    if f.search.strip():
+        out = [t for t in out if matches_search(t, f.search)]
+    return out
 
 
 def _month_bounds(month: str) -> tuple[date, date]:
@@ -62,38 +150,25 @@ def _month_bounds(month: str) -> tuple[date, date]:
     return date(y, m, 1), date(y + (m == 12), m % 12 + 1, 1)
 
 
-def month_summaries(account_id: int | None = None, unlabelled_only: bool = False) -> list[MonthSummary]:
+def month_summaries(f: TxnFilter | None = None) -> list[MonthSummary]:
     """Newest month first."""
-    with get_session() as s:
-        rows = s.exec(_filtered(select(Transaction.txn_date, Transaction.amount_minor, Transaction.direction,
-                                       Transaction.label_id, Transaction.kind), account_id, unlabelled_only)).all()
     by_month: dict[str, MonthSummary] = {}
-    for d, amt, direction, label_id, kind in rows:
-        key = d.strftime("%Y-%m")
+    for t in filtered_rows(f or TxnFilter()):
+        key = t.txn_date.strftime("%Y-%m")
         ms = by_month.setdefault(key, MonthSummary(key, 0, 0, 0, 0))
         ms.count += 1
-        if direction == Direction.debit:
-            ms.debit_minor += amt
+        if t.direction == Direction.debit:
+            ms.debit_minor += t.amount_minor
         else:
-            ms.credit_minor += amt
-        if label_id is None and kind == TxnKind.expense:
+            ms.credit_minor += t.amount_minor
+        if t.label_id is None and t.kind == TxnKind.expense:
             ms.unlabelled += 1
     return sorted(by_month.values(), key=lambda m: m.month, reverse=True)
 
 
-def month_transactions(month: str, account_id: int | None = None,
-                       unlabelled_only: bool = False) -> list[TxnRow]:
+def month_transactions(month: str, f: TxnFilter | None = None) -> list[TxnRow]:
     """Transactions of one month, newest day first."""
-    start, end = _month_bounds(month)
-    with get_session() as s:
-        q = (select(Transaction, Account.name, ExpenseGroup.name)
-             .join(Account, Account.id == Transaction.account_id)
-             .outerjoin(ExpenseGroup, ExpenseGroup.id == Transaction.group_id)
-             .where(Transaction.txn_date >= start, Transaction.txn_date < end))
-        rows = s.exec(_filtered(q, account_id, unlabelled_only)
-                      .order_by(col(Transaction.txn_date).desc(), Transaction.id)).all()
-    return [TxnRow(t.id, t.txn_date, acc, t.description, t.amount_minor, t.direction, t.kind, t.label_id,
-                   t.group_id, grp or "", t.notes, t.account_id) for t, acc, grp in rows]
+    return filtered_rows(f or TxnFilter(), month)
 
 
 def set_fields(txn_id: int, **fields) -> None:
