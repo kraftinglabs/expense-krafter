@@ -5,6 +5,8 @@ description = "ExpenseKrafter: personal desktop expense tracker for bank account
 requires-python = ">=3.11"
 dependencies = [
     "nicegui[native,plotly]>=2.10",
+    # Linux: the desktop window uses Qt (installs from pip, bundles cleanly).
+    "pywebview[qt]>=5; sys_platform == 'linux'",
     "sqlmodel>=0.0.22",
     "pandas>=2.2",
     "openpyxl>=3.1",

@@ -1,5 +1,6 @@
 """Statement passwords, kept in the OS credential store (Windows Credential
-Manager), never in the DB. They stay on this machine and are not synced to
+Manager; on Linux the Secret Service, i.e. GNOME Keyring or KWallet), never in
+the DB. They stay on this machine and are not synced to
 Google Drive with the data folder.
 
 Entries are keyed by the database's unique id plus the account id, so a
@@ -10,6 +11,7 @@ fresh DB after a reset, or a different data folder).
 from __future__ import annotations
 
 import logging
+import sys
 
 import keyring
 from keyring.errors import KeyringError, PasswordDeleteError
@@ -19,6 +21,8 @@ from ..db.session import database_id
 SERVICE = "ExpenseKrafter statements"
 LEGACY_SERVICE = "ExpenseTracker statements"  # before the rename
 log = logging.getLogger(__name__)
+# Where saved passwords go, in words for the UI.
+STORE_NAME = "Windows Credential Manager" if sys.platform == "win32" else "your system keyring"
 
 
 def _user(account_id: int) -> str:
@@ -39,8 +43,15 @@ def get_password(account_id: int) -> str | None:
         return None
 
 
-def set_password(account_id: int, password: str) -> None:
-    keyring.set_password(SERVICE, _user(account_id), password)
+def set_password(account_id: int, password: str) -> bool:
+    """False if there's no usable credential store (e.g. a Linux desktop
+    without a keyring service); the password just isn't remembered then."""
+    try:
+        keyring.set_password(SERVICE, _user(account_id), password)
+        return True
+    except KeyringError:
+        log.exception("Couldn't save statement password to the credential store")
+        return False
 
 
 def forget_password(account_id: int) -> None:

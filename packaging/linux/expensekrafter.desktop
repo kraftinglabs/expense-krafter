@@ -1,0 +1,11 @@
+[Desktop Entry]
+Type=Application
+Name=ExpenseKrafter
+GenericName=Expense Tracker
+Comment=Track spending across your bank accounts and credit cards
+Exec=@APP_DIR@/ExpenseKrafter
+Icon=@APP_DIR@/expensekrafter.png
+Terminal=false
+Categories=Office;Finance;
+Keywords=expense;budget;bank;credit card;finance;
+StartupWMClass=ExpenseKrafter

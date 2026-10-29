@@ -10,16 +10,42 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
+import sys
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
 
 APP_NAME = "ExpenseKrafter"
-CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home() / ".config")) / APP_NAME
+WINDOWS = sys.platform == "win32"
+
+
+def _documents_dir() -> Path:
+    """The user's Documents folder on Linux/macOS (XDG name if set, e.g. a
+    localised 'Dokumente'), else ~/Documents."""
+    try:
+        out = subprocess.run(["xdg-user-dir", "DOCUMENTS"], capture_output=True, text=True, timeout=2)
+        if out.returncode == 0 and (path := out.stdout.strip()) and Path(path) != Path.home():
+            return Path(path)
+    except (OSError, subprocess.SubprocessError):
+        pass
+    return Path.home() / "Documents"
+
+
+if WINDOWS:
+    # %APPDATA%\ExpenseKrafter (settings) and %LOCALAPPDATA%\ExpenseKrafter\data (DB).
+    CONFIG_DIR = Path(os.environ.get("APPDATA", Path.home() / "AppData/Roaming")) / APP_NAME
+    DEFAULT_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / "AppData/Local")) / APP_NAME / "data"
+else:
+    # ~/.config/ExpenseKrafter (settings) and ~/Documents/ExpenseKrafter (DB, backups),
+    # so your data sits somewhere you can see and back up.
+    CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / APP_NAME
+    DEFAULT_DATA_DIR = _documents_dir() / APP_NAME
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
-DEFAULT_DATA_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".local/share")) / APP_NAME / "data"
-# Before it was renamed, the app kept its files under "ExpenseTracker".
+# Before it was renamed, the app kept its files under "ExpenseTracker" (the old
+# defaults were the same folders as above on Windows, ~/.local/share elsewhere).
 LEGACY_CONFIG_DIR = CONFIG_DIR.with_name("ExpenseTracker")
-LEGACY_DATA_DIR = DEFAULT_DATA_DIR.parent.with_name("ExpenseTracker") / "data"
+LEGACY_DATA_DIR = (DEFAULT_DATA_DIR.parent.with_name("ExpenseTracker") if WINDOWS
+                   else Path.home() / ".local/share/ExpenseTracker") / "data"
 
 
 @dataclass

@@ -117,3 +117,59 @@ def test_saved_passwords_move_to_the_new_name(tmp_path):
     assert vault.get_password(3) == "old-secret"
     assert keyring.get_password(vault.SERVICE, vault._user(3)) == "old-secret"
     assert keyring.get_password(vault.LEGACY_SERVICE, vault._user(3)) is None
+
+
+def _linux_paths(home, env: dict, xdg_documents: str | None) -> dict:
+    """Import config as it would load on Linux, in a separate process (the paths
+    are fixed at import time)."""
+    import json
+    import os
+    import subprocess
+    import sys
+
+    code = f"""
+import json, pathlib, subprocess, sys
+sys.platform = "linux"
+pathlib.Path.home = classmethod(lambda cls: pathlib.Path({str(home)!r}))
+def fake_run(cmd, **kw):
+    if {xdg_documents!r} is None:
+        raise FileNotFoundError(cmd[0])
+    return subprocess.CompletedProcess(cmd, 0, {xdg_documents!r} + chr(10), "")
+subprocess.run = fake_run
+from expensekrafter import config
+print(json.dumps({{"config": str(config.CONFIG_DIR), "data": str(config.DEFAULT_DATA_DIR),
+                  "legacy_data": str(config.LEGACY_DATA_DIR)}}))
+"""
+    clean = {k: v for k, v in os.environ.items() if k not in ("XDG_CONFIG_HOME",)}
+    out = subprocess.run([sys.executable, "-c", code], capture_output=True, text=True, env={**clean, **env},
+                         check=True)
+    return {k: v.replace("\\", "/") for k, v in json.loads(out.stdout).items()}
+
+
+def test_linux_keeps_data_in_documents(tmp_path):
+    home = tmp_path.as_posix()
+    paths = _linux_paths(tmp_path, {}, xdg_documents=None)  # no xdg-user-dir: ~/Documents
+    assert paths["data"] == f"{home}/Documents/ExpenseKrafter"
+    assert paths["config"] == f"{home}/.config/ExpenseKrafter"
+    assert paths["legacy_data"] == f"{home}/.local/share/ExpenseTracker/data"
+
+    # A localised / moved Documents folder and a custom XDG config dir are respected.
+    paths = _linux_paths(tmp_path, {"XDG_CONFIG_HOME": f"{home}/cfg"}, xdg_documents=f"{home}/Dokumente")
+    assert paths["data"] == f"{home}/Dokumente/ExpenseKrafter"
+    assert paths["config"] == f"{home}/cfg/ExpenseKrafter"
+
+
+def test_password_not_saved_without_a_keyring(tmp_path, monkeypatch):
+    import keyring
+    from keyring.errors import KeyringError
+
+    from expensekrafter.db import init_db
+    from expensekrafter.services import vault
+
+    init_db(db_path=tmp_path / "k.db")
+
+    def unavailable(*args):
+        raise KeyringError("no Secret Service")
+
+    monkeypatch.setattr(keyring, "set_password", unavailable)
+    assert vault.set_password(1, "secret") is False

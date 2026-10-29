@@ -55,6 +55,10 @@ def main() -> None:
         override_data_dir(sys.argv[sys.argv.index("--data-dir") + 1])  # never saved to settings
     elif adopt_legacy_install():  # first run after the rename from ExpenseTracker
         reload_settings()
+    if sys.platform.startswith("linux"):
+        app.native.start_args["gui"] = "qt"
+        # Linux takes the window icon from the app (Windows uses the exe's icon).
+        app.native.start_args["icon"] = str(layout.LOGO_PNG)
     app.on_startup(startup)
     app.on_shutdown(lambda: release_lock(settings))
     ui.run(

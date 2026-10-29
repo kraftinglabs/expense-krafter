@@ -18,18 +18,47 @@ python -m venv .venv
 
 ## Build the desktop app
 
+Build on the OS you're targeting (PyInstaller can't cross-compile).
+
+**Windows**
+
 ```bash
 .venv/Scripts/python -m pip install -e ".[dev,build]"
 .venv/Scripts/python build.py              # dist/ExpenseKrafter/ExpenseKrafter.exe
 .venv/Scripts/python build.py --onefile    # a single dist/ExpenseKrafter.exe (starts slower)
 ```
 
+**Linux** (Ubuntu/Debian package names shown; Python 3.11+)
+
+```bash
+sudo apt install python3-venv libxcb-cursor0 libegl1 libnss3   # Qt WebEngine runtime libraries
+python3 -m venv .venv
+.venv/bin/python -m pip install -e ".[dev,build]"   # pulls in PyQt6 + WebEngine on Linux
+.venv/bin/python build.py
+```
+
+This gives `dist/ExpenseKrafter/ExpenseKrafter` and
+`dist/ExpenseKrafter-linux-<arch>.tar.gz`. Unpack the archive on any Linux PC
+and run `./install.sh`: it copies the app to `~/.local/opt/ExpenseKrafter`, adds
+it to the app menu and an `expensekrafter` command to `~/.local/bin`
+(`./install.sh --uninstall` removes them again; your data stays).
+
 The tests run first; the build stops if they fail (`--skip-tests` to skip).
 The app uses the same data folder and settings as the dev version; no data is
-bundled. A windowed build has no console, so its log goes to
-`%APPDATA%\ExpenseKrafter\app.log`. The icon (a pixel-art wallet in the
+bundled. A windowed build has no console, so its log goes to `app.log` in the
+settings folder. The icon (a pixel-art wallet in the
 [Kraftinglabs](https://kraftinglabs.com) style) is drawn by
 `packaging/make_icon.py`; edit its pixel map and re-run it to change the icon.
+
+## Where things are saved
+
+| | Windows | Linux |
+|---|---|---|
+| Database + backups | `%LOCALAPPDATA%\ExpenseKrafter\data` | `~/Documents/ExpenseKrafter` (your XDG Documents folder) |
+| Settings, log, own bank icons | `%APPDATA%\ExpenseKrafter` | `~/.config/ExpenseKrafter` |
+| Saved statement passwords | Windows Credential Manager | Secret Service (GNOME Keyring / KWallet) |
+
+The database folder can be changed in Settings → Data folder.
 
 ## Data & Google Drive sync
 

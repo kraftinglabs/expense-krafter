@@ -3,8 +3,9 @@ Kraftinglabs pixel style and palette (https://kraftinglabs.com).
 
     .venv/Scripts/python packaging/make_icon.py
 
-Writes packaging/icon.ico (the exe icon, used by build.py), packaging/icon.png
-and expensekrafter/ui/logo.svg (sidebar logo and favicon). Edit PIXELS and
+Writes packaging/icon.ico (the Windows exe icon), packaging/icon.png (the Linux
+menu entry icon), expensekrafter/ui/logo.svg (sidebar logo and favicon) and
+expensekrafter/ui/logo.png (the Linux window icon). Edit PIXELS and
 re-run to change it.
 """
 
@@ -74,8 +75,9 @@ def main() -> None:
     # Multiples of 16 only, so every icon size stays pixel-perfect.
     big.save(ROOT / "packaging" / "icon.ico", sizes=[(s, s) for s in (16, 32, 48, 64, 128, 256)])
     big.save(ROOT / "packaging" / "icon.png")
+    big.save(ROOT / "expensekrafter" / "ui" / "logo.png")  # Linux window icon
     (ROOT / "expensekrafter" / "ui" / "logo.svg").write_text(svg(), encoding="utf-8")
-    print("Wrote packaging/icon.ico, packaging/icon.png, expensekrafter/ui/logo.svg")
+    print("Wrote packaging/icon.ico, packaging/icon.png, expensekrafter/ui/logo.svg, expensekrafter/ui/logo.png")
 
 
 if __name__ == "__main__":

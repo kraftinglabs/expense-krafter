@@ -66,8 +66,11 @@ def import_page() -> None:
             finally:
                 shutil.rmtree(tmp.parent, ignore_errors=True)
             if remember_pw := state.pop("remember", None):
-                vault.set_password(acc_id, remember_pw)
-                ui.notify("Password saved for this account on this computer", type="info")
+                if vault.set_password(acc_id, remember_pw):
+                    ui.notify("Password saved for this account on this computer", type="info")
+                else:
+                    ui.notify(f"Couldn't save the password: {vault.STORE_NAME} isn't available",
+                              type="warning")
             show_preview()
 
         async def ask_password(filename: str, wrong: bool, saved: bool) -> tuple[str, bool] | None:
@@ -80,7 +83,7 @@ def import_page() -> None:
                 pw = ui.input("Password", password=True, password_toggle_button=True).classes("w-full") \
                     .props("autofocus autocomplete=off")
                 remember = ui.checkbox("Remember for this account on this computer", value=True)
-                ui.label("Stored in Windows Credential Manager, not in the database or Google Drive.") \
+                ui.label(f"Stored in {vault.STORE_NAME}, not in the database or Google Drive.") \
                     .classes("text-xs et-muted")
                 def unlock() -> None:
                     if pw.value:

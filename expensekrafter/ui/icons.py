@@ -1,8 +1,8 @@
 """Bank icons for accounts.
 
 Built-in icons live in ui/bank_icons/. Drop your own square SVG/PNG files into
-the user folder (%APPDATA%\\ExpenseKrafter\\bank_icons) and they appear in the
-account icon picker; the file name is the icon's name (hdfc.svg -> "Hdfc").
+the user folder (%APPDATA%\\ExpenseKrafter\\bank_icons, or ~/.config/ExpenseKrafter/
+bank_icons on Linux) and they appear in the account icon picker; the file name is the icon's name (hdfc.svg -> "Hdfc").
 """
 
 from __future__ import annotations

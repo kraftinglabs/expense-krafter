@@ -22,6 +22,7 @@ NAV = [
 THEME_CSS = Path(__file__).with_name("theme.css")
 # Pixel-art app icon (packaging/make_icon.py draws it).
 LOGO_SVG = Path(__file__).with_name("logo.svg")
+LOGO_PNG = Path(__file__).with_name("logo.png")
 FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
          '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
          'family=Geist:wght@300;400;500;600&display=swap">')
