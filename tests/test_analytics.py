@@ -108,3 +108,17 @@ def test_balance_history_starts_from_the_opening_balance(tmp_path):
     assert analytics.balance_on(daily, date(2026, 1, 5)) == 99500 + 20000
     assert analytics.balance_on(daily, date(2026, 1, 31)) == 90000 + 25000
     assert analytics.balance_on(daily, date(2025, 12, 1)) is None
+
+
+def test_label_totals_folds_the_tail_into_miscellaneous():
+    import pandas as pd
+
+    from expensekrafter.services.analytics import MISC, label_totals
+
+    amounts = {"Rent": 900, "Food": 500, "Travel": 300, "Fuel": 200, "Health": 60, "Books": 30, "Games": 10}
+    df = pd.DataFrame([{"label": k, "color": "#000", "amount": v} for k, v in amounts.items()])
+    top = label_totals(df, top=5)
+    assert top["label"].tolist() == ["Rent", "Food", "Travel", "Fuel", "Health", MISC]
+    assert top["amount"].iloc[-1] == 40 and round(top["share"].sum()) == 100
+    assert len(label_totals(df)) == 7
+    assert MISC not in label_totals(df.head(6), top=5)["label"].tolist()  # one extra label isn't folded

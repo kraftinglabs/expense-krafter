@@ -180,6 +180,27 @@ def top_labels(df: pd.DataFrame, n: int = 7) -> pd.DataFrame:
     return out
 
 
+MISC = "Miscellaneous"
+MISC_COLOR = "#c3c8c5"
+
+
+def label_totals(df: pd.DataFrame, top: int | None = None) -> pd.DataFrame:
+    """Spend per label, biggest first (label, color, amount, share). With `top`,
+    only the `top` biggest labels are kept and the rest become one
+    'Miscellaneous' row at the end."""
+    if df.empty:
+        return pd.DataFrame(columns=["label", "color", "amount", "share"])
+    totals = (df.groupby("label", as_index=False).agg(color=("color", "first"), amount=("amount", "sum"))
+              .sort_values("amount", ascending=False, ignore_index=True))
+    if top is not None and len(totals) > top + 1:  # folding a single label would hide it for nothing
+        rest = totals.iloc[top:]
+        misc = pd.DataFrame([{"label": MISC, "color": MISC_COLOR, "amount": rest["amount"].sum()}])
+        totals = pd.concat([totals.iloc[:top], misc], ignore_index=True)
+    spent = totals["amount"].sum()
+    totals["share"] = totals["amount"] / spent * 100 if spent else 0.0
+    return totals
+
+
 def recurring_items(months: int = 12) -> pd.DataFrame:
     """Transactions under recurring labels, collapsed per merchant: last
     amount, last date, how often it was seen and the yearly cost estimate."""

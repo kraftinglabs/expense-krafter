@@ -6,7 +6,7 @@ from datetime import date, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
-from nicegui import ui
+from nicegui import app, ui
 
 from ..services import analytics, cards, ledger
 from ..services.money import fmt
@@ -237,24 +237,91 @@ def balance_chart(daily: pd.DataFrame, period: analytics.Period | None) -> None:
         ui.plotly(fig).classes("w-full")
 
 
-def by_label(df: pd.DataFrame) -> None:
-    with _chart_card("Where it went", "Spend by label"):
-        if df.empty:
-            return _empty()
-        totals = (df.groupby(["label", "color"], as_index=False)["amount"].sum()
-                  .sort_values("amount"))
-        total = totals["amount"].sum()
-        totals["text"] = totals["amount"].map(_rupees) + "  " + (totals["amount"] / total * 100).map("{:.0f}%".format)
-        fig = go.Figure(go.Bar(
-            x=totals["amount"], y=totals["label"], orientation="h", marker_color=totals["color"],
-            text=totals["text"], textposition="outside", cliponaxis=False,
-            hovertemplate="<b>%{y}</b><br>₹%{x:,.0f}<extra></extra>",
+LABEL_TOP = 5
+LABEL_CHARTS = {"bar": "Bar", "pie": "Pie"}
+
+
+def _label_figure(totals: pd.DataFrame, kind: str, height: int | None = None) -> go.Figure:
+    """Spend by label as horizontal bars (biggest on top) or a donut. Labels where
+    refunds beat spend (net negative) are left out of the chart; the breakdown
+    table still lists them."""
+    shown = totals[totals["amount"] > 0]
+    if kind == "pie":
+        fig = go.Figure(go.Pie(
+            labels=shown["label"], values=shown["amount"], hole=0.58, sort=False, direction="clockwise",
+            marker=dict(colors=shown["color"], line=dict(color=_c()["surface"], width=2)),
+            textinfo="percent", textposition="inside", insidetextorientation="horizontal",
+            hovertemplate="<b>%{label}</b><br>₹%{value:,.0f} · %{percent}<extra></extra>",
         ))
-        _style(fig, height=max(220, 34 * len(totals) + 40))
-        fig.update_traces(marker_cornerradius=4)
-        fig.update_xaxes(visible=False, range=[0, totals["amount"].max() * 1.6])
-        fig.update_yaxes(gridcolor="rgba(0,0,0,0)", tickprefix="")
-        ui.plotly(fig).classes("w-full")
+        _style(fig, height=height or 340, legend=True)
+        fig.update_layout(legend=dict(orientation="h", yanchor="top", y=-0.02, x=0.5, xanchor="center"),
+                          annotations=[dict(text=f"<b>{_rupees(totals['amount'].sum())}</b><br>spent",
+                                            showarrow=False, font=dict(size=13, color=_c()["ink"]))])
+        return fig
+    rows = shown.iloc[::-1]  # Plotly draws the first bar at the bottom
+    text = rows["amount"].map(_rupees) + "  " + rows["share"].map("{:.0f}%".format)
+    fig = go.Figure(go.Bar(
+        x=rows["amount"], y=rows["label"], orientation="h", marker_color=rows["color"],
+        text=text, textposition="outside", cliponaxis=False,
+        hovertemplate="<b>%{y}</b><br>₹%{x:,.0f}<extra></extra>",
+    ))
+    _style(fig, height=height or max(220, 34 * len(rows) + 40))
+    fig.update_traces(marker_cornerradius=4)
+    fig.update_xaxes(visible=False, range=[0, rows["amount"].max() * 1.85])  # room for the value text
+    fig.update_yaxes(gridcolor="rgba(0,0,0,0)", tickprefix="")
+    return fig
+
+
+def _label_breakdown(df: pd.DataFrame, kind: str) -> None:
+    """Dialog with every label: the chart plus a table of amounts and shares."""
+    totals = analytics.label_totals(df)
+    with ui.dialog() as dialog, ui.card().classes("w-[56rem] max-w-full gap-4"):
+        with ui.row().classes("w-full items-center no-wrap"):
+            with ui.column().classes("gap-0"):
+                ui.label("Where it went").classes("et-card-title")
+                ui.label(f"All {len(totals)} labels · {_rupees(totals['amount'].sum())}").classes("et-faint text-xs")
+            ui.space()
+            ui.button(icon="close", on_click=dialog.close).props("flat round dense")
+        with ui.element("div").classes("grid grid-cols-1 md:grid-cols-2 gap-6 w-full items-start"):
+            ui.plotly(_label_figure(totals, kind, height=None if kind == "bar" else 420)).classes("w-full")
+            with ui.column().classes("w-full gap-0"):
+                for r in totals.itertuples():
+                    with ui.row().classes("w-full items-center no-wrap gap-3 py-2 et-hero-rule"):
+                        ui.element("span").classes("w-3 h-3 rounded-full shrink-0") \
+                            .style(f"background:{r.color}")
+                        ui.label(r.label).classes("flex-1 truncate text-sm")
+                        ui.label(f"{r.share:.1f}%").classes("et-faint text-xs et-num w-12 text-right")
+                        ui.label(_rupees(r.amount)).classes("et-num text-sm font-medium w-24 text-right")
+    dialog.on("hide", dialog.delete)
+    dialog.open()
+
+
+def by_label(df: pd.DataFrame) -> None:
+    store = app.storage.user
+    with ui.card().classes("w-full et-card-hover et-rise"):
+        with ui.row().classes("w-full items-start no-wrap"):
+            with ui.column().classes("gap-0"):
+                ui.label("Where it went").classes("et-card-title")
+                ui.label(f"Spend by label, top {LABEL_TOP}").classes("et-faint text-xs")
+            ui.space()
+            kind = ui.toggle(LABEL_CHARTS, value=store.get("label_chart", "bar"),
+                             on_change=lambda e: (store.update(label_chart=e.value), body.refresh())) \
+                .props("unelevated no-caps dense toggle-color=primary color=transparent text-color=grey-8 "
+                       "padding='2px 10px'").classes("et-segment")
+
+        @ui.refreshable
+        def body() -> None:
+            if df.empty:
+                return _empty()
+            totals = analytics.label_totals(df, top=LABEL_TOP)
+            ui.plotly(_label_figure(totals, kind.value)).classes("w-full")
+            if analytics.MISC in totals["label"].values:
+                hidden = df["label"].nunique() - LABEL_TOP
+                ui.button(f"Show all labels ({hidden} more in Miscellaneous)", icon="open_in_full",
+                          on_click=lambda: _label_breakdown(df, kind.value)) \
+                    .props("flat no-caps dense").classes("self-center text-sm")
+
+        body()
 
 
 def month_pace(account_id: int | None) -> None:
