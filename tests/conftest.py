@@ -30,6 +30,7 @@ def default_narration_rules(tmp_path, monkeypatch):
     from expensekrafter.services import narration
 
     monkeypatch.setattr(narration, "USER_RULES", tmp_path / "no-user-rules.toml")
+    monkeypatch.setattr(narration, "USER_EXTRA", tmp_path / "no-my-rules.toml")
 
 
 @pytest.fixture(autouse=True)

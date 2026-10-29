@@ -14,9 +14,15 @@
 #                Templates use the pattern's named groups: "{name}". Filters can
 #                be chained: "{name|company|title}". Filters: title, upper, lower,
 #                bank (bank code → name), note (drops empty/boilerplate remarks),
-#                company (drops Pvt Ltd / Limited / LLP), autopay (any text → "Auto-pay").
+#                company (drops Pvt Ltd / Limited / LLP), autopay (any text → "Auto-pay"),
+#                alias (a known name from the [[alias]] lists below, else unchanged).
 #                `title` may be a list: the first non-empty one wins.
 #                Empty `details` entries are dropped.
+#   [[alias]]    pattern → name, for merchants whose bank text is cut or cryptic.
+#   my_rules.toml next to settings.json can hold your own [[rule]] and
+#                [[alias]] entries (same format). They're tried before these,
+#                survive updates to this file and keep personal details (like
+#                your own name) out of it.
 #   Nothing matched → the cleaned text is shown as is, with bubbles after it.
 
 # ---------------------------------------------------------------- cleanup
@@ -39,6 +45,16 @@ replace = ''
 [[cleanup]]
 name = "Drop the SBI WDL/DEP TFR prefix"
 pattern = '^(WDL|DEP)\s+(TFR|CSH|CHQ|CLG)\s+'
+replace = ''
+
+[[cleanup]]
+name = "Niyo: the bank keeps 11 characters of the merchant, overwrites the 12th with '/', then the rest ('CORNER CAFE' → 'CORNER CA/E'... the 12th letter lost). Mark the lost letter with ·"
+pattern = '^(POS\s+VS(?:\s+REV)?/\d+/[\d:]+/)([^/]{11})/(?=\S)'
+replace = '\1\2·'
+
+[[cleanup]]
+name = "Statement footer caught in the last row ('... Closing Balance ACCOUNT SCHEME CODE ...')"
+pattern = '\s+Closing Balance\b.*$'
 replace = ''
 
 [[cleanup]]
@@ -137,6 +153,78 @@ title = "{name|company|title}"
 method = "Card"
 details = ["{city|title}", "{si|autopay}", "{note}"]
 
+# ---------------------------------------------------------------- Niyo (DCB / SBM forex account)
+
+[[rule]]
+name = "Niyo card reversal  (POS VS REV/<ref>/<time>/<merchant>)"
+pattern = '^POS\s+VS\s+REV/(?P<ref>\d+)/(?P<time>[\d:]+)/(?P<name>.*?)[\s/]*$'
+title = ["{name|title|alias} (reversed)", "Card reversal"]
+method = "Card refund"
+ref = "{ref}"
+kind = "refund"
+
+[[rule]]
+name = "Niyo Grab ride or food  (POS VS/<ref>/<time>/Grab* <booking>)"
+pattern = '^POS\s+VS/(?P<ref>\d+)/(?P<time>[\d:]+)/Grab\*\s*(?P<booking>[^/\s·]*)'
+title = "Grab"
+method = "Card"
+details = ["{booking}", "{time}"]
+ref = "{ref}"
+
+[[rule]]
+name = "Niyo card spend via a payment processor  (POS VS/<ref>/<time>/<processor>*<merchant>)"
+pattern = '^POS\s+VS/(?P<ref>\d+)/(?P<time>[\d:]+)/(?P<via>[A-Za-z]+)\*(?P<name>.+?)[\s/]*$'
+title = "{name|title|alias}"
+method = "Card"
+details = ["via {via|title}", "{time}"]
+ref = "{ref}"
+
+[[rule]]
+name = "Niyo card spend  (POS VS/<ref>/<time>/<merchant>)"
+pattern = '^POS\s+VS/(?P<ref>\d+)/(?P<time>[\d:]+)/(?P<name>.+?)[\s/]*$'
+title = "{name|title|alias}"
+method = "Card"
+details = ["{time}"]
+ref = "{ref}"
+
+[[rule]]
+name = "Niyo ATM withdrawal abroad  (VISACWD ATM <atm>/<ref>/<time>/<place>)"
+pattern = '^VISACWD\s+ATM\s+(?P<atm>\S+)/(?P<ref>\d+)/(?P<time>[\d:]+)/(?P<place>.*?)[\s/]*$'
+title = "Cash withdrawal"
+method = "ATM"
+details = ["{place|title}", "{time}"]
+ref = "{ref}"
+
+[[rule]]
+name = "Niyo international ATM fee  (DT:<date> INTERNATIONAL ATM CASH WTHDRWL)"
+pattern = '^DT:(?P<date>[\d-]+)\s+INTERNATIONAL\s+ATM'
+title = "International ATM fee"
+method = "Bank fee"
+details = ["for {date}"]
+
+[[rule]]
+name = "GST on a bank fee  (CGST|SGST|IGST FOR DT:<date> <what>)"
+pattern = '^(?P<tax>[CSI]GST)\s+FOR\s+DT:(?P<date>[\d-]+)'
+title = "{tax|upper} on bank fee"
+method = "Tax"
+details = ["for {date}"]
+
+[[rule]]
+name = "Niyo UPI  (UPI:REC|PAY:<ref>/<name>/<bank>)"
+pattern = '^UPI:(?P<dir>[A-Z]+):(?P<ref>\d+)/(?P<name>[^/]*)/(?P<bank>.*?)\s*$'
+title = ["{name|title}", "UPI {dir|lower}"]
+method = "UPI"
+details = ["{bank}"]
+ref = "{ref}"
+
+[[rule]]
+name = "Niyo app transfer  (MB NEFT|IMPS/<ref>/<IFSC>/<name>)"
+pattern = '^MB\s+(?P<rail>NEFT|IMPS|RTGS)/(?P<ref>[^/]+)/(?P<ifsc>[A-Z]{4})\w*/(?P<name>.*?)\s*$'
+title = ["{name|title}", "{rail} transfer"]
+method = "{rail|upper}"
+details = ["{ifsc|bank}"]
+ref = "{ref}"
+
 # ---------------------------------------------------------------- other banks
 
 [[rule]]
@@ -159,6 +247,14 @@ title = "{name|title}"
 method = "{rail|upper}"
 
 # ---------------------------------------------------------------- lookups
+
+# Known names for merchants whose bank text is cut short or cryptic. Patterns
+# match the shown title (after the title filter), case-insensitively; · is a
+# letter the bank dropped. Add your own in my_rules.toml (see the top).
+# For example:
+# [[alias]]
+# pattern = '^Corner Ca·e$'
+# name = "Corner Cafe"
 
 [title]
 # Words the `title` filter keeps in capitals instead of 'Capitalising' them.

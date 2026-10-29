@@ -64,3 +64,55 @@ method = "Rent"
 def test_default_rules_file_is_valid():
     rules = load_rules(narration.DEFAULT_RULES)
     assert rules.rules and rules.cleanup and "SBIN" in rules.banks
+
+
+def test_niyo_descriptions():
+    # Made-up rows in Niyo's statement format.
+    n = parse("POS VS/612345678901/12:19:55/Grab* A-1AB/XYZ123")
+    assert (n.title, n.method, n.details, n.ref) == ("Grab", "Card", ["A-1AB", "12:19:55"], "612345678901")
+    assert parse("POS VS/612345678902/09:02:32/HOTEL SUNRISE/").title == "Hotel Sunrise"
+    assert parse("POS VS/612345678903/20:29:21/NET*CORNER CAFE").details == ["via Net", "20:29:21"]
+    rev = parse("POS VS REV/612345678901/12:19:55/Grab* /")
+    assert (rev.title, rev.kind) == ("Grab (reversed)", "refund")
+    atm = parse("VISACWD ATM 1234/612345678904/17:37:45/MAIN STREET")
+    assert (atm.title, atm.method, atm.details) == ("Cash withdrawal", "ATM", ["Main Street", "17:37:45"])
+    assert parse("DT:14-10-2026 INTERNATIONAL ATM CASH WTHDRWL").title == "International ATM fee"
+    assert parse("CGST FOR DT:14-10-2026 INTERNATION").title == "CGST on bank fee"
+    upi = parse("UPI:REC:012345678901/JANE DOE/Some Bank")
+    assert (upi.title, upi.method, upi.details) == ("Jane Doe", "UPI", ["Some Bank"])
+    neft = parse("MB NEFT/DCBLN0000000000000001/HDFC/JOHN SMITH")
+    assert (neft.title, neft.method, neft.details) == ("John Smith", "NEFT", ["HDFC"])
+
+
+def test_niyo_cut_merchant_names_and_footer():
+    # Niyo keeps 11 characters of the merchant, overwrites the 12th with '/'.
+    assert parse("POS VS/612345678905/10:11:57/CORNER CAFE/S AND BAKES").title == "Corner Cafe·S And Bakes"
+    assert parse("POS VS/612345678906/10:25:24/SHOP NO 57/").title == "Shop No 57"  # name ended at 11
+    assert parse("POS VS/612345678907/10:11:57/TEA (Old To/n Road)").title == "Tea (Old To·N Road)"
+    footer = "MB NEFT/DCBLN0000000000000002/HDFC/JOHN SMITH Closing Balance ACCOUNT SCHEME CODE NA Customer Name X"
+    assert parse(footer).title == "John Smith"
+
+
+def test_personal_aliases_win_and_reload(tmp_path, monkeypatch):
+    from expensekrafter.services import narration
+
+    aliases = tmp_path / "my_rules.toml"
+    monkeypatch.setattr(narration, "USER_EXTRA", aliases)
+    raw = "POS VS/612345678905/10:11:57/CORNER CAFE/S AND BAKES"
+    assert parse(raw).title == "Corner Cafe·S And Bakes"
+    aliases.write_text("[[alias]]\npattern = '^corner cafe·s'\nname = \"Corner Cafe's and Bakes\"\n",
+                       encoding="utf-8")
+    assert parse(raw).title == "Corner Cafe's and Bakes"
+    assert narration.rules_error() is None
+
+
+def test_personal_rules_set_the_type_first(tmp_path, monkeypatch):
+    from expensekrafter.services import narration
+
+    mine = tmp_path / "my_rules.toml"
+    monkeypatch.setattr(narration, "USER_EXTRA", mine)
+    mine.write_text("[[rule]]\nname = 'me'\npattern = '\\bJOHN\\s+Q\\s+SMITH\\b'\nkind = 'transfer'\n",
+                    encoding="utf-8")
+    own = parse("MB NEFT/DCBLN0000000000000003/HDFC/JOHN Q SMITH")
+    assert (own.title, own.kind) == ("John Q Smith", "transfer")  # title still from the shared rule
+    assert parse("MB NEFT/DCBLN0000000000000004/HDFC/JOHN SMITH").kind is None

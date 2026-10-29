@@ -173,3 +173,25 @@ def test_password_not_saved_without_a_keyring(tmp_path, monkeypatch):
 
     monkeypatch.setattr(keyring, "set_password", unavailable)
     assert vault.set_password(1, "secret") is False
+
+
+def test_web_mode_needs_a_password_beyond_localhost(monkeypatch):
+    import pytest as _pytest
+
+    from expensekrafter import __main__ as entry
+    from expensekrafter.ui import auth
+
+    assert entry.parse_args(["--browser"]).web  # dev shortcut = --web --no-open
+    monkeypatch.delenv(auth.PASSWORD_ENV, raising=False)
+    monkeypatch.setattr(entry.ui, "run", lambda **kw: _pytest.fail("must not start"))
+    monkeypatch.setattr("sys.argv", ["expensekrafter", "--web", "--host", "0.0.0.0", "--data-dir", "x"])
+    with _pytest.raises(SystemExit, match="without a password"):
+        entry.main()
+
+
+def test_login_only_redirects_within_the_app():
+    from expensekrafter.ui.auth import safe_next
+
+    assert safe_next("/transactions") == "/transactions"
+    for bad in ("//evil.example", "/\\evil.example","https://evil.example", "evil"):
+        assert safe_next(bad) == "/"

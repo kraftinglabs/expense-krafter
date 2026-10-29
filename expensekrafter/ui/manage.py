@@ -11,11 +11,11 @@ from ..config import save_settings, settings
 from ..db import get_session
 from ..db.models import Account, AccountType, IntervalUnit, Label
 from ..importers import parser_options
-from ..services import labels, narration, vault
+from ..services import app_lock, labels, narration, vault
 from ..services.importer import reapply_rule_types
 from ..services.money import fmt
 from ..services.accounts import delete_account, mask_account_number, save_account, usage_count
-from . import icons
+from . import auth, icons
 from .layout import frame, set_theme
 
 
@@ -297,6 +297,54 @@ def splits_page() -> None:
         ui.label("Coming next: pick an expense or group, then attach the reimbursement credits.").classes("et-muted")
 
 
+def app_password_card() -> None:
+    is_set = app_lock.is_set()
+    with ui.card().classes("w-full max-w-3xl"):
+        ui.label("App password").classes("font-medium")
+        ui.label("Asked for every time ExpenseKrafter opens; Sign out in the sidebar locks it again. "
+                 "It's stored only as a hash, with your data. It locks the app, not the database file "
+                 "itself.").classes("text-sm et-muted")
+        if auth.env_password_active():
+            ui.label(f"A password from {auth.PASSWORD_ENV} is also accepted on this run.").classes("text-xs et-faint")
+
+        def field(label: str):
+            return ui.input(label, password=True, password_toggle_button=True) \
+                .props("outlined dense autocomplete=new-password").classes("w-64")
+
+        with ui.row().classes("items-end gap-3 flex-wrap"):
+            current = field("Current password") if is_set else None
+            new = field("New password")
+            confirm = field("Repeat new password")
+
+        def done(message: str) -> None:
+            auth.refresh()
+            auth.mark_signed_in()  # don't lock out the person who just changed it
+            ui.notify(message, type="positive")
+            # Reload so the sidebar's Sign out (shown only with a password) updates too.
+            ui.timer(1.2, ui.navigate.reload, once=True)
+
+        def save() -> None:
+            try:
+                app_lock.set_password(new.value or "", confirm.value or "", current.value if current else None)
+            except ValueError as exc:
+                ui.notify(str(exc), type="warning")
+                return
+            done("Password changed" if is_set else "Password set: you'll be asked for it next time")
+
+        def remove() -> None:
+            try:
+                app_lock.remove_password(current.value or "")
+            except ValueError as exc:
+                ui.notify(str(exc), type="warning")
+                return
+            done("Password removed")
+
+        with ui.row().classes("gap-2"):
+            ui.button("Change password" if is_set else "Set password", icon="lock", on_click=save)
+            if is_set:
+                ui.button("Remove password", icon="lock_open", on_click=remove).props("flat color=negative")
+
+
 @ui.page("/settings")
 def settings_page() -> None:
     with frame("Settings", "Where your data lives and when to remind you"):
@@ -308,6 +356,8 @@ def settings_page() -> None:
                           on_change=lambda e: set_theme(e.value)) \
                     .props("unelevated no-caps toggle-color=primary color=transparent text-color=grey-7 "
                            "padding='4px 16px'").classes("et-segment")
+
+        app_password_card()
 
         with ui.card().classes("w-full max-w-3xl"):
             ui.label("Data folder").classes("font-medium")

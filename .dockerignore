@@ -1,0 +1,6 @@
+# Only the app goes into the image: never data, statements, builds or venvs.
+*
+!pyproject.toml
+!README.md
+!expensekrafter/
+expensekrafter/**/__pycache__

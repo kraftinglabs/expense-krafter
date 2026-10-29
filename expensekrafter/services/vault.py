@@ -59,6 +59,8 @@ def forget_password(account_id: int) -> None:
         keyring.delete_password(SERVICE, _user(account_id))
     except PasswordDeleteError:
         pass
+    except KeyringError:  # no credential store at all (e.g. in Docker)
+        log.exception("Couldn't remove statement password from the credential store")
 
 
 def has_password(account_id: int) -> bool:

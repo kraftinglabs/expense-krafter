@@ -2,6 +2,9 @@
 
 The rules live in a TOML file (see narration_rules.toml for the format):
 the bundled default, or the user's own copy in the config dir when present.
+Personal rules and aliases (my_rules.toml in the config dir) are layered on
+top of either and tried first, so they survive rule updates and keep personal
+details (your own name, say) out of the shared file.
 The raw description stays in the DB untouched (duplicate detection relies on
 it); this module only interprets it for display, merchant grouping and the
 default type on import.
@@ -19,6 +22,9 @@ from ..config import CONFIG_DIR
 
 DEFAULT_RULES = Path(__file__).with_name("narration_rules.toml")
 USER_RULES = CONFIG_DIR / "narration_rules.toml"
+USER_EXTRA = CONFIG_DIR / "my_rules.toml"
+# Marks a letter the bank dropped from a merchant name (see the Niyo cleanup).
+GAP = "·"
 
 _TEMPLATE = re.compile(r"\{(\w+)((?:\|\w+)*)\}")
 
@@ -54,6 +60,14 @@ class _Rule:
     kind: str | None = None
 
 
+def _capitalize(word: str) -> str:
+    """'pagoda' -> 'Pagoda', and '(pagoda' -> '(Pagoda' (str.capitalize skips that)."""
+    for i, ch in enumerate(word):
+        if ch.isalpha():
+            return word[:i] + word[i:].capitalize()
+    return word
+
+
 @dataclass
 class RuleSet:
     path: Path
@@ -63,6 +77,7 @@ class RuleSet:
     ignore_notes: set[str]
     note_min_length: int
     keep_upper: set[str]
+    aliases: list[tuple[re.Pattern, str]] = field(default_factory=list)
 
     # ---- filters for templates ------------------------------------------
     def _filter(self, value: str, name: str) -> str:
@@ -70,8 +85,11 @@ class RuleSet:
         match name:
             case "title":
                 value = re.sub(r"\s+", " ", value).strip(" -*/")
-                return " ".join(w.upper() if w.upper() in self.keep_upper else w.capitalize()
+                return " ".join(GAP.join(p.upper() if p.upper() in self.keep_upper else _capitalize(p)
+                                         for p in w.split(GAP))
                                 for w in value.split())
+            case "alias":  # a known name for this merchant, from the [[alias]] lists
+                return next((name for regex, name in self.aliases if regex.search(value)), value)
             case "upper":
                 return value.upper()
             case "lower":
@@ -120,8 +138,11 @@ class RuleSet:
         return n
 
 
-def load_rules(path: Path) -> RuleSet:
-    data = tomllib.loads(path.read_text(encoding="utf-8"))
+def _aliases(data: dict) -> list[tuple[re.Pattern, str]]:
+    return [(re.compile(a["pattern"], re.I), a["name"]) for a in data.get("alias", [])]
+
+
+def _rules(data: dict) -> list[_Rule]:
     rules = []
     for r in data.get("rule", []):
         title = r.get("title", [])
@@ -131,15 +152,22 @@ def load_rules(path: Path) -> RuleSet:
             method=r.get("method", ""), details=r.get("details", []), ref=r.get("ref", ""),
             kind=r.get("kind"),
         ))
+    return rules
+
+
+def load_rules(path: Path, extra_path: Path | None = None) -> RuleSet:
+    data = tomllib.loads(path.read_text(encoding="utf-8"))
+    personal = tomllib.loads(extra_path.read_text(encoding="utf-8")) if extra_path else {}
     notes = data.get("notes", {})
     return RuleSet(
         path=path,
         cleanup=[(re.compile(c["pattern"], re.I | re.M), c.get("replace", "")) for c in data.get("cleanup", [])],
-        rules=rules,
+        rules=_rules(personal) + _rules(data),  # personal ones are tried first
         banks={k.upper(): v for k, v in data.get("banks", {}).items()},
         ignore_notes={s.upper() for s in notes.get("ignore", [])} | {""},
         note_min_length=notes.get("min_length", 5),
         keep_upper={s.upper() for s in data.get("title", {}).get("keep_upper", [])},
+        aliases=_aliases(personal) + _aliases(data),  # personal ones win
     )
 
 
@@ -154,12 +182,14 @@ def current_rules() -> RuleSet:
     """Rules from the active file, reloaded whenever it changes. A broken user
     file falls back to the defaults (the error is kept for Settings to show)."""
     path = rules_path()
-    key = (path, path.stat().st_mtime)
+    extra = USER_EXTRA if USER_EXTRA.exists() else None
+    key = (path, path.stat().st_mtime, extra and extra.stat().st_mtime)
     if _cache["key"] != key:
         try:
-            _cache["rules"], _cache["error"] = load_rules(path), None
+            _cache["rules"], _cache["error"] = load_rules(path, extra), None
         except (tomllib.TOMLDecodeError, re.error, KeyError, ValueError) as exc:
-            _cache["rules"], _cache["error"] = load_rules(DEFAULT_RULES), f"{path.name}: {exc}"
+            broken = path if path != DEFAULT_RULES else extra
+            _cache["rules"], _cache["error"] = load_rules(DEFAULT_RULES), f"{broken.name}: {exc}"
         _cache["key"] = key
     return _cache["rules"]
 

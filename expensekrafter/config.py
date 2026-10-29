@@ -40,6 +40,9 @@ else:
     # so your data sits somewhere you can see and back up.
     CONFIG_DIR = Path(os.environ.get("XDG_CONFIG_HOME") or Path.home() / ".config") / APP_NAME
     DEFAULT_DATA_DIR = _documents_dir() / APP_NAME
+# Overrides, e.g. to keep everything in one mounted folder in Docker.
+CONFIG_DIR = Path(os.environ.get("EXPENSEKRAFTER_CONFIG_DIR") or CONFIG_DIR)
+DEFAULT_DATA_DIR = Path(os.environ.get("EXPENSEKRAFTER_DATA_DIR") or DEFAULT_DATA_DIR)
 SETTINGS_FILE = CONFIG_DIR / "settings.json"
 # Before it was renamed, the app kept its files under "ExpenseTracker" (the old
 # defaults were the same folders as above on Windows, ~/.local/share elsewhere).

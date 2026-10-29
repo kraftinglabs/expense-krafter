@@ -3,23 +3,28 @@ name = "expensekrafter"
 version = "0.1.0"
 description = "ExpenseKrafter: personal desktop expense tracker for bank accounts and credit cards, by Kraftinglabs"
 requires-python = ">=3.11"
+# The base install is the web app (`expensekrafter --web`); the `desktop` extra
+# adds the native window.
 dependencies = [
-    "nicegui[native,plotly]>=2.10",
-    # Linux: the desktop window uses Qt (installs from pip, bundles cleanly).
-    "pywebview[qt]>=5; sys_platform == 'linux'",
+    "nicegui[plotly]>=2.10",
     "sqlmodel>=0.0.22",
     "pandas>=2.2",
     "openpyxl>=3.1",
     "xlrd>=2.0",
     "pdfplumber>=0.11",
-    "desktop-notifier>=6.0",
     "keyring>=25",
     "msoffcrypto-tool>=5.4",
 ]
 
 [project.optional-dependencies]
+desktop = [
+    "nicegui[native]>=2.10",
+    # Linux: the window uses Qt (installs from pip, bundles cleanly).
+    "pywebview[qt]>=5; sys_platform == 'linux'",
+    "desktop-notifier>=6.0",
+]
 dev = ["pytest>=8", "pypdf>=5"]
-build = ["pyinstaller>=6.10"]
+build = ["pyinstaller>=6.10", "expensekrafter[desktop]"]
 
 [project.scripts]
 expensekrafter = "expensekrafter.__main__:main"
@@ -30,6 +35,11 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 include = ["expensekrafter*"]
+
+# Files the app reads at runtime, so a `pip install` / `pipx install` has them.
+[tool.setuptools.package-data]
+"expensekrafter.ui" = ["theme.css", "logo.svg", "logo.png", "bank_icons/*"]
+"expensekrafter.services" = ["narration_rules.toml"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

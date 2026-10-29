@@ -72,6 +72,12 @@ def _sidebar(active: str) -> None:
                     ui.icon(icon)
                     ui.label(label)
             ui.space()
+            from . import auth
+
+            if auth.required():
+                with ui.element("div").classes("et-nav-item mb-2 cursor-pointer").on("click", auth.sign_out):
+                    ui.icon("logout")
+                    ui.label("Sign out")
             _theme_switch()
             data_dir = str(settings.data_path)  # includes a --data-dir override
             in_drive = "drive" in data_dir.lower()

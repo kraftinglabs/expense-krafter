@@ -1,20 +1,61 @@
 # ExpenseKrafter
 
-Personal desktop expense tracker for multiple bank accounts and credit cards,
-part of [Kraftinglabs](https://kraftinglabs.com).
-Python + [NiceGUI](https://nicegui.io) (native window) + Plotly + AG Grid + SQLite.
+Personal expense tracker for multiple bank accounts and credit cards, as a
+desktop app or a web app, part of [Kraftinglabs](https://kraftinglabs.com).
+Python + [NiceGUI](https://nicegui.io) + Plotly + AG Grid + SQLite.
 
-## Run
+## Run as a web app (any OS)
+
+The most portable way: it runs in your browser, so it works the same on
+Windows, macOS and any Linux desktop (including Wayland compositors like
+Hyprland). Needs Python 3.11+ and [pipx](https://pipx.pypa.io).
+
+```bash
+pipx install /path/to/ExpenseKrafter     # a clone of this repo (or git+https://github.com/<you>/ExpenseKrafter)
+expensekrafter --web                     # serves http://localhost:8080 and opens your browser
+```
+
+On Arch / CachyOS: `sudo pacman -S python-pipx` first. Stop the app with Ctrl+C;
+your data stays in `~/Documents/ExpenseKrafter` (see "Where things are saved").
+
+By default it only listens on your own computer. To reach it from other devices
+(`--host 0.0.0.0`) it **requires a password**, read from the
+`EXPENSEKRAFTER_PASSWORD` environment variable, and shows a sign-in page. Put it
+behind HTTPS (e.g. a Caddy or nginx reverse proxy) before using it over a
+network you don't trust: plain HTTP sends the password unencrypted.
+
+### Docker
+
+```bash
+docker build -t expensekrafter .
+docker run -d --name expensekrafter -p 127.0.0.1:8080:8080 \
+    -v ~/Documents/ExpenseKrafter:/data -e EXPENSEKRAFTER_PASSWORD='choose-one' expensekrafter
+```
+
+Everything (database, backups, settings) lives in the mounted `/data` folder.
+For a container that only you can reach (published on `127.0.0.1` as above),
+you can skip the password by appending
+`expensekrafter --web --host 0.0.0.0 --no-open --no-password` to `docker run`.
+
+### What's different from the desktop app
+
+- Card due-date reminders show on the dashboard ("Card bills pending") instead
+  of as desktop pop-ups.
+- Statement passwords are remembered only where a keyring is available (not in
+  Docker); otherwise you type them on each import.
+
+## Run from source
 
 ```bash
 python -m venv .venv
-.venv/Scripts/python -m pip install -e ".[dev]"
+.venv/Scripts/python -m pip install -e ".[dev,desktop]"   # Linux/macOS: .venv/bin/python
 .venv/Scripts/python -m expensekrafter            # desktop window
-.venv/Scripts/python -m expensekrafter --browser  # http://localhost:8080 (dev)
+.venv/Scripts/python -m expensekrafter --web      # web app in your browser
 .venv/Scripts/python -m pytest
 ```
 
-`--data-dir <folder>` overrides the data folder (handy for a throwaway dev DB).
+`expensekrafter --help` lists all options. `--data-dir <folder>` uses another
+data folder for one run (handy for a throwaway dev DB).
 
 ## Build the desktop app
 
@@ -31,7 +72,12 @@ Build on the OS you're targeting (PyInstaller can't cross-compile).
 **Linux** (Ubuntu/Debian package names shown; Python 3.11+)
 
 ```bash
-sudo apt install python3-venv libxcb-cursor0 libegl1 libnss3   # Qt WebEngine runtime libraries
+# Build tools, plus the libraries Qt WebEngine needs (a desktop install has most already)
+sudo apt install python3-venv libpython3-dev binutils git \
+    libegl1 libgl1 libnss3 libglib2.0-0t64 libfontconfig1 libdbus-1-3 libcups2t64 \
+    libxkbcommon0 libxkbcommon-x11-0 libxcb-cursor0 libxcb-icccm4 libxcb-keysyms1 libxcb-shape0 \
+    libxcb-render-util0 libxcb-image0 libxcb-randr0 libxcomposite1 libxdamage1 libxrandr2 \
+    libxfixes3 libxkbfile1 libxtst6 libxshmfence1 libasound2t64 libwayland-cursor0 libwayland-egl1
 python3 -m venv .venv
 .venv/bin/python -m pip install -e ".[dev,build]"   # pulls in PyQt6 + WebEngine on Linux
 .venv/bin/python build.py
@@ -68,6 +114,12 @@ Drive syncs a single file, a lock file warns if another PC has it open, and a
 backup is copied to `backups/` on every launch.
 
 ## Sensitive data
+
+- **App password**: Settings → App password. Asked for every time the app
+  opens (desktop or web); Sign out in the sidebar locks it. Only a salted
+  scrypt hash is stored, inside the database, so it travels with your data. It
+  locks the app, not the database file. Forgot it? `expensekrafter
+  --reset-password` removes it (the database is backed up first).
 
 - **Statement passwords**: encrypted PDFs and Excel files (.xlsx/.xls) prompt
   for the password on import. With "Remember", the password goes into Windows
