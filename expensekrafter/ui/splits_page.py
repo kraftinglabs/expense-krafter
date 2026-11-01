@@ -1,0 +1,319 @@
+"""Splits: expenses you paid for others, who still owes what, and their repayments."""
+
+from __future__ import annotations
+
+from nicegui import ui
+
+from ..services import splits
+from ..services.money import fmt, to_minor
+from .layout import frame
+
+SHOW = {"open": "Open", "settled": "Settled", "all": "All"}
+
+
+def _rupees(minor: int) -> str:
+    return f"₹{minor / 100:,.0f}" if minor % 100 == 0 else fmt(minor)
+
+
+def _kpi(title: str, value: str, icon: str, sub: str = "") -> None:
+    with ui.card().classes("et-kpi et-card-hover et-rise flex-1 min-w-52"):
+        with ui.row().classes("w-full items-center justify-between no-wrap"):
+            ui.label(title).classes("et-muted text-sm font-medium")
+            with ui.element("div").classes("et-kpi-icon"):
+                ui.icon(icon).classes("text-lg")
+        ui.label(value).classes("et-kpi-value et-num mt-3")
+        if sub:
+            ui.label(sub).classes("text-xs mt-1 et-faint")
+
+
+def _bar(done: float) -> None:
+    ui.html('<div style="height:4px;border-radius:2px;background:var(--surface-3);overflow:hidden">'
+            f'<div style="width:{min(max(done, 0), 1) * 100:.1f}%;height:100%;border-radius:6px;'
+            'background:var(--accent-grad)"></div></div>', sanitize=False).classes("w-full")
+
+
+def _expense_option(t, acc: str) -> str:
+    return f"{t.txn_date:%d %b %Y} · {splits.merchant_name(t.description)} · {acc} · {fmt(t.amount_minor)}"
+
+
+def _credit_option(c: splits.Credit) -> str:
+    left = f" ({fmt(c.free_minor)} left)" if c.linked_minor else ""
+    return f"{c.txn_date:%d %b %Y} · {c.name} · {c.account} · {fmt(c.amount_minor)}{left}"
+
+
+@ui.page("/splits")
+def splits_page() -> None:
+    with frame("Splits", "Shared expenses and the money friends paid back"):
+        state = {"show": "open"}
+
+        with ui.row().classes("w-full items-center gap-4"):
+            ui.toggle(SHOW, value="open", on_change=lambda e: (state.update(show=e.value), content.refresh())) \
+                .props("unelevated no-caps toggle-color=primary color=transparent text-color=grey-8 "
+                       "padding='6px 14px'").classes("et-segment")
+            ui.space()
+            ui.button("New split", icon="add", on_click=lambda: split_dialog(None))
+
+        @ui.refreshable
+        def content() -> None:
+            everything = splits.splits()
+            open_ = [sp for sp in everything if not sp.settled]
+            with ui.row().classes("w-full gap-4"):
+                owed = sum(sp.remaining_minor for sp in everything)
+                waiting = sorted({p.person for sp in open_ for p in sp.people if p.remaining_minor})
+                _kpi("Owed to you", _rupees(owed), "call_received",
+                     f"by {len(waiting)} {'person' if len(waiting) == 1 else 'people'}" if waiting else "all settled")
+                _kpi("Paid back", _rupees(sum(sp.paid_minor for sp in everything)), "savings",
+                     f"of {_rupees(sum(sp.owed_minor for sp in everything))} shared")
+                _kpi("Open splits", str(len(open_)), "call_split", f"{len(everything) - len(open_)} settled")
+
+            loose = splits.unassigned_reimbursements()
+            if loose:
+                with ui.card().classes("w-full gap-2"):
+                    ui.label("Repayments not linked to a split").classes("font-medium")
+                    ui.label("Marked as reimbursements but not tied to an expense yet. Link them so the "
+                             "spend is taken off the right expense.").classes("text-xs et-muted")
+                    for c in loose:
+                        with ui.row().classes("w-full items-center gap-3 no-wrap"):
+                            ui.label(f"{c.txn_date:%d %b %Y}").classes("et-faint text-sm w-24 flex-none")
+                            ui.label(c.name).classes("flex-1 truncate")
+                            ui.label(c.account).classes("et-faint text-sm")
+                            ui.label(fmt(c.free_minor)).classes("et-num font-medium w-28 text-right")
+                            ui.button("Link", icon="link", on_click=lambda c=c: link_dialog(c)) \
+                                .props("outline dense no-caps")
+
+            shown = {"open": open_, "settled": [sp for sp in everything if sp.settled],
+                     "all": everything}[state["show"]]
+            if not shown:
+                with ui.column().classes("w-full items-center py-16 gap-2"):
+                    ui.icon("call_split").classes("text-5xl et-faint")
+                    ui.label("Paid for friends? Click New split, pick the expense and say who owes what."
+                             if not everything else "Nothing here.").classes("et-muted")
+                return
+            with ui.column().classes("w-full gap-3"):
+                for sp in shown:
+                    split_card(sp)
+
+        def split_card(sp: splits.Split) -> None:
+            with ui.card().classes("w-full et-card-hover et-rise gap-3"):
+                with ui.row().classes("w-full items-start no-wrap gap-4"):
+                    with ui.column().classes("gap-0 flex-1 min-w-0"):
+                        ui.label(sp.name).classes("font-semibold truncate w-full")
+                        details = [f"{sp.txn_date:%d %b %Y}", sp.account] + ([sp.label] if sp.label else [])
+                        ui.label(" · ".join(details)).classes("text-xs et-faint")
+                    with ui.column().classes("gap-0 items-end"):
+                        ui.label(fmt(sp.amount_minor)).classes("et-num font-semibold")
+                        ui.label(f"your share {fmt(sp.your_share_minor)}").classes("text-xs et-faint et-num")
+                    if sp.settled:
+                        ui.label("✓ Settled").classes("et-chip accent flex-none")
+                    else:
+                        ui.label(f"{fmt(sp.remaining_minor)} to come").classes("et-chip warn flex-none")
+                    with ui.button(icon="more_vert").props("flat round dense"):
+                        with ui.menu():
+                            ui.menu_item("Edit shares", on_click=lambda sp=sp: split_dialog(sp))
+                            ui.menu_item("Delete split", on_click=lambda sp=sp: confirm_delete(sp))
+                for p in sp.people:
+                    with ui.row().classes("w-full items-center gap-4 no-wrap"):
+                        ui.label(p.person).classes("w-40 truncate font-medium")
+                        with ui.column().classes("flex-1 gap-1"):
+                            _bar(p.paid_minor / p.owed_minor if p.owed_minor else 1)
+                            ui.label(f"paid {fmt(p.paid_minor)} of {fmt(p.owed_minor)}") \
+                                .classes("text-xs et-faint et-num")
+                        if p.remaining_minor:
+                            ui.button(f"Record {fmt(p.remaining_minor)}", icon="call_received",
+                                      on_click=lambda sp=sp, p=p: repayment_dialog(sp, p)) \
+                                .props("outline dense no-caps").classes("w-44")
+                        else:
+                            ui.label("✓ Paid").classes("et-muted text-sm w-44 text-right")
+                if sp.repayments:
+                    with ui.column().classes("w-full gap-0 pt-2 et-hero-rule"):
+                        for r in sp.repayments:
+                            with ui.row().classes("w-full items-center gap-3 no-wrap"):
+                                ui.icon("subdirectory_arrow_right").classes("et-faint")
+                                ui.label(f"{fmt(r.amount_minor)} from {r.person} · {r.credit_date:%d %b %Y} · "
+                                         f"{r.credit_account}").classes("text-sm et-muted flex-1")
+                                ui.button(icon="link_off", on_click=lambda r=r: unlink(r)) \
+                                    .props("flat round dense size=sm").tooltip("Remove this repayment")
+
+        def act(fn, *args, done: str = "") -> bool:
+            try:
+                fn(*args)
+            except splits.SplitError as e:
+                ui.notify(str(e), type="warning")
+                return False
+            if done:
+                ui.notify(done, type="positive")
+            content.refresh()
+            return True
+
+        def unlink(r: splits.Repayment) -> None:
+            act(splits.remove_repayment, r.link_id, done="Repayment removed")
+
+        def confirm_delete(sp: splits.Split) -> None:
+            with dialog_host, ui.dialog() as dlg, ui.card().classes("w-96"):
+                ui.label(f"Delete the split for {sp.name}?").classes("font-medium")
+                ui.label("Shares and repayment links go. The expense and the credits stay; credits already "
+                         "marked as reimbursements still count against spend on the day they came in.") \
+                    .classes("text-sm et-muted")
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Delete", icon="delete",
+                              on_click=lambda: act(splits.delete_split, sp.txn_id, done="Split deleted")
+                              and dlg.close()).props("color=negative")
+            dlg.open()
+
+        def split_dialog(sp: splits.Split | None) -> None:
+            known = splits.people()
+            rows: list[dict] = []
+            with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[40rem] max-w-full gap-3"):
+                ui.label("Edit split" if sp else "New split").classes("et-card-title")
+                if sp:
+                    ui.label(f"{sp.name} · {sp.txn_date:%d %b %Y} · {fmt(sp.amount_minor)}").classes("et-muted")
+                    total = {"minor": sp.amount_minor}
+                    expense = None
+                else:
+                    candidates = splits.expense_candidates(limit=400)
+                    amounts = {t.id: t.amount_minor for t, _ in candidates}
+                    total = {"minor": 0}
+                    expense = ui.select({t.id: _expense_option(t, acc) for t, acc in candidates},
+                                        label="Expense you paid", with_input=True,
+                                        on_change=lambda e: (total.update(minor=amounts.get(e.value, 0)),
+                                                             refresh_share())) \
+                        .props("outlined dense options-dense").classes("w-full")
+                    ui.label("Type to search by name, account or amount.").classes("text-xs et-faint -mt-2")
+
+                ui.label("Who owes you").classes("text-sm font-medium mt-2")
+                people_box = ui.column().classes("w-full gap-2")
+                share_line = ui.label().classes("text-sm et-num")
+
+                def refresh_share() -> None:
+                    others = sum(to_minor(r["amount"].value or 0) for r in rows)
+                    mine = total["minor"] - others
+                    share_line.text = (f"Your share: {fmt(mine)}" if total["minor"] else "Pick the expense first")
+                    share_line.classes(replace="text-sm et-num " + ("et-warn" if mine < 0 else ""))
+
+                def add_row(name: str = "", amount: float | None = None) -> None:
+                    with people_box, ui.row().classes("w-full items-center gap-2 no-wrap") as line:
+                        name_in = ui.input("Name", value=name, autocomplete=known) \
+                            .props("outlined dense").classes("flex-1")
+                        amount_in = ui.number("Owes ₹", value=amount, min=0, format="%.2f",
+                                              on_change=lambda: refresh_share()) \
+                            .props("outlined dense stack-label").classes("w-40")
+                        row = {"name": name_in, "amount": amount_in, "line": line}
+                        ui.button(icon="close", on_click=lambda: remove_row(row)).props("flat round dense")
+                    rows.append(row)
+                    refresh_share()
+
+                def remove_row(row: dict) -> None:
+                    rows.remove(row)
+                    people_box.remove(row["line"])
+                    refresh_share()
+
+                def split_equally() -> None:
+                    if not total["minor"] or not rows:
+                        return
+                    each = total["minor"] // (len(rows) + 1)  # you are one of the people; rounding stays with you
+                    for r in rows:
+                        r["amount"].value = each / 100
+                    refresh_share()
+
+                with ui.row().classes("gap-2"):
+                    ui.button("Add person", icon="person_add", on_click=lambda: add_row()).props("flat no-caps")
+                    ui.button("Split equally with me", icon="balance", on_click=split_equally) \
+                        .props("flat no-caps")
+
+                for p in (sp.people if sp else []):
+                    add_row(p.person, p.owed_minor / 100)
+                if not rows:
+                    add_row()
+
+                def save() -> None:
+                    txn_id = sp.txn_id if sp else expense.value
+                    if txn_id is None:
+                        ui.notify("Pick the expense first", type="warning")
+                        return
+                    shares = {r["name"].value or "": to_minor(r["amount"].value or 0) for r in rows}
+                    if len(shares) < len(rows):
+                        ui.notify("Each person once, please", type="warning")
+                        return
+                    if act(splits.save_split, txn_id, shares, done="Split saved"):
+                        dlg.close()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Save", icon="check", on_click=save)
+            dlg.on("hide", dlg.delete)
+            dlg.open()
+
+        def repayment_dialog(sp: splits.Split, p: splits.PersonShare) -> None:
+            credits = {c.txn_id: c for c in splits.credit_candidates(limit=400)}
+            with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[40rem] max-w-full gap-3"):
+                ui.label(f"Money back from {p.person}").classes("et-card-title")
+                ui.label(f"For {sp.name} · {sp.txn_date:%d %b %Y} · still owes {fmt(p.remaining_minor)}") \
+                    .classes("et-muted")
+                if not credits:
+                    ui.label("No incoming money left to assign. Import the statement with their payment first.") \
+                        .classes("et-warn text-sm")
+                credit = ui.select({k: _credit_option(c) for k, c in credits.items()}, label="Money that came in",
+                                   with_input=True,
+                                   on_change=lambda e: amount.set_value(
+                                       min(p.remaining_minor, credits[e.value].free_minor) / 100 if e.value else None)) \
+                    .props("outlined dense options-dense").classes("w-full")
+                ui.label("Type their name or the amount to find it.").classes("text-xs et-faint -mt-2")
+                amount = ui.number("Amount for this split ₹", min=0, format="%.2f").props("outlined dense stack-label") \
+                    .classes("w-56")
+
+                def save() -> None:
+                    if credit.value is None:
+                        ui.notify("Pick the credit first", type="warning")
+                        return
+                    if act(splits.record_repayment, sp.txn_id, credit.value, p.person,
+                           to_minor(amount.value or 0), done="Repayment recorded"):
+                        dlg.close()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Record", icon="check", on_click=save)
+            dlg.on("hide", dlg.delete)
+            dlg.open()
+
+        def link_dialog(c: splits.Credit) -> None:
+            owing = {(sp.txn_id, p.person): (sp, p) for sp in splits.splits() for p in sp.people if p.remaining_minor}
+            with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[36rem] max-w-full gap-3"):
+                ui.label("Link a repayment").classes("et-card-title")
+                ui.label(f"{c.name} · {c.txn_date:%d %b %Y} · {fmt(c.free_minor)} to assign").classes("et-muted")
+                if not owing:
+                    ui.label("Nobody owes you anything right now. Add a split first.").classes("et-warn text-sm")
+                options = {f"{tid}|{person}": f"{person} · {sp.name} · {sp.txn_date:%d %b %Y} · "
+                                              f"owes {fmt(p.remaining_minor)}"
+                           for (tid, person), (sp, p) in owing.items()}
+                target = ui.select(options, label="Who paid, and for what", with_input=True,
+                                   on_change=lambda e: amount.set_value(
+                                       min(c.free_minor, owing[_key(e.value)][1].remaining_minor) / 100
+                                       if e.value else None)) \
+                    .props("outlined dense options-dense").classes("w-full")
+                amount = ui.number("Amount ₹", min=0, format="%.2f").props("outlined dense stack-label") \
+                    .classes("w-56")
+
+                def save() -> None:
+                    if target.value is None:
+                        return
+                    tid, person = _key(target.value)
+                    if act(splits.record_repayment, tid, c.txn_id, person, to_minor(amount.value or 0),
+                           done="Repayment linked"):
+                        dlg.close()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Link", icon="link", on_click=save)
+            dlg.on("hide", dlg.delete)
+            dlg.open()
+
+        content()
+        # Dialogs are created here, not inside the card menu that opens them (a
+        # closing menu would take its dialog with it).
+        dialog_host = ui.element("div")
+
+
+def _key(value: str) -> tuple[int, str]:
+    tid, person = value.split("|", 1)
+    return int(tid), person

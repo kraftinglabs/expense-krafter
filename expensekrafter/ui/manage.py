@@ -1,4 +1,4 @@
-"""Accounts, labels, settings and the (upcoming) splits page."""
+"""Accounts, labels and settings."""
 
 from __future__ import annotations
 
@@ -288,13 +288,6 @@ def labels_page() -> None:
             dlg.open()
 
         listing()
-
-
-@ui.page("/splits")
-def splits_page() -> None:
-    with frame("Splits", "Shared expenses and the money friends paid back"):
-        ui.label("Link money paid back by friends (bank credits) to the expense it covers.")
-        ui.label("Coming next: pick an expense or group, then attach the reimbursement credits.").classes("et-muted")
 
 
 def app_password_card() -> None:

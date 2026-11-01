@@ -162,6 +162,16 @@ class CCPaymentLink(SQLModel, table=True):
     amount_minor: int
 
 
+class SplitShare(SQLModel, table=True):
+    """What one person owes you for an expense you paid for everyone. Your own
+    share is whatever the shares don't cover."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    expense_txn_id: int = Field(foreign_key="transaction.id", index=True)
+    person: str
+    amount_minor: int
+
+
 class ReimbursementLink(SQLModel, table=True):
     """Links money paid back by others (a bank credit) to the expense it
     reimburses. The expense is either a single transaction or a group."""
