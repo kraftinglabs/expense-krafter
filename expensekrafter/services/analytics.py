@@ -54,18 +54,28 @@ class Period:
         return (self.end - self.start).days
 
     def previous(self) -> "Period":
+        """The same length just before. Whole months compare with whole months
+        (October with September, not with the 31 days before it)."""
+        if self.start.day == 1 and self.end.day == 1:
+            months = (self.end.year - self.start.year) * 12 + self.end.month - self.start.month
+            return Period(_month_start(self.start, months), self.start)
         return Period(self.start - timedelta(days=self.days), self.start)
 
 
+MONTH_KEY = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
+
+
 def _month_start(d: date, back: int = 0) -> date:
-    y, m = d.year, d.month - back
-    while m <= 0:
-        y, m = y - 1, m + 12
-    return date(y, m, 1)
+    y, m = divmod(d.year * 12 + d.month - 1 - back, 12)  # back < 0 goes forward
+    return date(y, m + 1, 1)
 
 
 def period_for(key: str, today: date | None = None) -> Period | None:
-    """Presets: this_month, last_month, 3m, 6m, 12m, ytd, all (None)."""
+    """Presets: this_month, last_month, 3m, 6m, 12m, ytd, all (None), or one
+    month as "YYYY-MM"."""
+    if MONTH_KEY.fullmatch(key):
+        start = date(int(key[:4]), int(key[5:]), 1)
+        return Period(start, _month_start(start, -1))
     today = today or date.today()
     next_month = _month_start(today, -1)
     match key:
@@ -208,6 +218,8 @@ def comparable_previous(period: Period, today: date | None = None) -> Period:
     today = today or date.today()
     prev = period.previous()
     elapsed = (min(period.end, today + timedelta(days=1)) - period.start).days
+    if elapsed >= period.days:  # finished: compare whole with whole
+        return prev
     return Period(prev.start, prev.start + timedelta(days=max(elapsed, 1)))
 
 

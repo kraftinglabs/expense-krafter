@@ -128,7 +128,7 @@ def test_comparable_previous_cuts_a_running_period():
     from expensekrafter.services.analytics import Period, comparable_previous
 
     oct_ = Period(date(2026, 10, 1), date(2026, 11, 1))
-    assert comparable_previous(oct_, today=date(2026, 10, 10)) == Period(date(2026, 8, 31), date(2026, 9, 10))
+    assert comparable_previous(oct_, today=date(2026, 10, 10)) == Period(date(2026, 9, 1), date(2026, 9, 11))
     done = Period(date(2026, 9, 1), date(2026, 10, 1))
     assert comparable_previous(done, today=date(2026, 10, 10)) == done.previous()
 
@@ -149,3 +149,14 @@ def test_label_changes_and_daily_spend():
     assert ch["change"].tolist() == [600, -500]
     days = daily_spend(now, date(2026, 10, 1), date(2026, 10, 5))
     assert days["amount"].tolist() == [1000, 0, 700, 0] and days["count"].tolist() == [2, 0, 2, 0]
+
+
+def test_single_month_periods():
+    oct_ = period_for("2026-10")
+    assert (oct_.start, oct_.end) == (date(2026, 10, 1), date(2026, 11, 1))
+    assert (oct_.previous().start, oct_.previous().end) == (date(2026, 9, 1), date(2026, 10, 1))
+    dec = period_for("2026-12")
+    assert dec.end == date(2027, 1, 1) and dec.previous().start == date(2026, 11, 1)
+    q = period_for("3m", today=date(2026, 10, 15))  # Aug-Oct compares with May-Jul
+    assert (q.previous().start, q.previous().end) == (date(2026, 5, 1), date(2026, 8, 1))
+    assert period_for("2026-13") is None

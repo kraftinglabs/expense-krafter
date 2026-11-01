@@ -295,3 +295,6 @@ html, body {
   .q-toggle__inner--truthy .q-toggle__thumb:after { background: var(--primary-fg) !important; }
   .q-tooltip { background: var(--primary-bg) !important; color: var(--primary-fg) !important; }
 }
+
+/* Spend over time: bars open their transactions on click. */
+.et-click-bars .nsewdrag { cursor: pointer !important; }

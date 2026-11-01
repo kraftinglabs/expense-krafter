@@ -31,6 +31,10 @@ CHART = {
 # colour-blind safe, and always paired with a +/− sign in the text.
 
 
+def _period_name(key: str, months: dict[str, str]) -> str:
+    return PERIODS[key].lower() if key in PERIODS else months.get(key, key)
+
+
 def _c() -> dict:
     return CHART["dark" if is_dark() else "light"]
 
@@ -165,12 +169,48 @@ def _days_elapsed(df: pd.DataFrame, period: analytics.Period | None) -> int:
     return (df["date"].max() - df["date"].min()).days + 1
 
 
+def _bar_transactions(rows: pd.DataFrame, label: str, when: str) -> None:
+    """Dialog listing the transactions behind one bar of 'Spend over time'."""
+    rows = rows.sort_values("amount", ascending=False)
+    several = rows["label_orig"].nunique() > 1  # the chart's "Other" bar holds several labels
+    with ui.dialog() as dialog, ui.card().classes("w-[60rem] max-w-full gap-3"):
+        with ui.row().classes("w-full items-start no-wrap"):
+            with ui.column().classes("gap-0"):
+                ui.label(f"{label} · {when}").classes("et-card-title")
+                ui.label(f"{len(rows)} transaction{'s' if len(rows) != 1 else ''} · "
+                         f"{_rupees(rows['amount'].sum())}").classes("et-faint text-xs")
+            ui.space()
+            ui.button(icon="close", on_click=dialog.close).props("flat round dense")
+        columns = [
+            {"name": "date", "label": "Date", "field": "date", "align": "left"},
+            {"name": "merchant", "label": "Paid to", "field": "merchant", "align": "left"},
+            {"name": "description", "label": "Details", "field": "description", "align": "left"},
+            {"name": "account", "label": "Account", "field": "account", "align": "left"},
+            {"name": "amount", "label": "Amount", "field": "amount", "align": "right"},
+        ]
+        if several:
+            columns.insert(2, {"name": "label", "label": "Label", "field": "label", "align": "left"})
+        table = ui.table(
+            columns=columns, pagination=0,
+            rows=[{"date": r.date.strftime("%d %b %Y"), "merchant": r.merchant, "description": r.description,
+                   "account": r.account, "amount": _rupees(r.amount), "label": r.label_orig}
+                  for r in rows.itertuples()],
+        ).props("flat dense hide-bottom").classes("w-full")
+        table.add_slot("body-cell-description", r"""
+            <q-td :props="props">
+              <div class="truncate max-w-72 et-faint text-xs" :title="props.value">{{ props.value }}</div>
+            </q-td>""")
+    dialog.on("hide", dialog.delete)
+    dialog.open()
+
+
 def spend_over_time(df: pd.DataFrame, period: analytics.Period | None) -> None:
     daily = period is not None and period.days <= 62
-    with _chart_card("Spend over time", "Daily, stacked by label" if daily else "Monthly, stacked by label"):
+    subtitle = ("Daily" if daily else "Monthly") + ", stacked by label · click a bar to see its transactions"
+    with _chart_card("Spend over time", subtitle):
         if df.empty:
             return _empty()
-        data = analytics.top_labels(df)
+        data = analytics.top_labels(df).assign(label_orig=df["label"])
         data["bucket"] = data["date"].dt.strftime("%d %b") if daily else data["date"].dt.strftime("%b %Y")
         data["order"] = data["date"].dt.normalize() if daily else data["date"].dt.to_period("M").dt.start_time
         grouped = data.groupby(["order", "bucket", "label", "color"], as_index=False)["amount"].sum()
@@ -181,12 +221,24 @@ def spend_over_time(df: pd.DataFrame, period: analytics.Period | None) -> None:
             part = grouped[grouped["label"] == label]
             fig.add_bar(x=part["bucket"], y=part["amount"], name=label, marker_color=part["color"].iloc[0],
                         marker_line=dict(color=_c()["surface"], width=1.5),
+                        customdata=[[b, label] for b in part["bucket"]],
                         hovertemplate=f"<b>{label}</b><br>%{{x}}: ₹%{{y:,.0f}}<extra></extra>")
         _style(fig, height=340, legend=True)
-        fig.update_layout(barmode="stack")
+        fig.update_layout(barmode="stack", dragmode=False)
         fig.update_traces(marker_cornerradius=4)
         fig.update_xaxes(categoryorder="array", categoryarray=buckets)
-        ui.plotly(fig).classes("w-full")
+
+        def on_click(e) -> None:
+            points = (e.args or {}).get("points") or []
+            if not points or not points[0].get("customdata"):
+                return
+            bucket, label = points[0]["customdata"]
+            rows = data[(data["bucket"] == bucket) & (data["label"] == label)]
+            if not rows.empty:
+                when = rows["date"].iloc[0].strftime("%a %d %b %Y") if daily else bucket
+                _bar_transactions(rows, label, when)
+
+        ui.plotly(fig).classes("w-full et-click-bars").on("plotly_click", on_click)
 
 
 def cash_flow(spend: pd.DataFrame, income: pd.DataFrame, period: analytics.Period | None) -> None:
@@ -542,12 +594,22 @@ def dashboard_page() -> None:
     with frame("Dashboard", "Where your money went, across every account and card"):
         accounts = {a.id: a.name for a in ledger.accounts()}
         state = {"period": "6m", "account": None}
+        months = {ms.month: date.fromisoformat(ms.month + "-01").strftime("%B %Y")
+                  for ms in ledger.month_summaries()}  # newest first
+
+        def pick(key: str | None, other) -> None:
+            if not key:  # cleared because the other control was used
+                return
+            state["period"] = key
+            other.value = None
+            content.refresh()
 
         with ui.row().classes("w-full items-center gap-4"):
-            ui.toggle(PERIOD_SHORT, value=state["period"],
-                      on_change=lambda e: (state.update(period=e.value), content.refresh())) \
+            presets = ui.toggle(PERIOD_SHORT, value=state["period"], on_change=lambda e: pick(e.value, month_pick)) \
                 .props("unelevated no-caps toggle-color=primary color=transparent text-color=grey-8 "
                        "padding='6px 14px'").classes("et-segment")
+            month_pick = ui.select(months, value=None, label="Month", on_change=lambda e: pick(e.value, presets)) \
+                .props("outlined dense options-dense").classes("w-52")
             ui.space()
             ui.select({None: "All accounts"} | accounts, value=None,
                       on_change=lambda e: (state.update(account=e.value), content.refresh())) \
@@ -581,7 +643,7 @@ def dashboard_page() -> None:
             unlabelled = int((df["label"] == analytics.UNLABELLED).sum()) if not df.empty else 0
 
             with ui.row().classes("w-full gap-4 items-stretch"):
-                _hero_kpi(f"Spent · {PERIODS[state['period']].lower()}", total, change, prev, trend, daily,
+                _hero_kpi(f"Spent · {_period_name(state['period'], months)}", total, change, prev, trend, daily,
                           len(df), total / _days_elapsed(df, period), total / _months_in(df, period))
                 kept = earned - total
                 with ui.element("div").classes("grid grid-cols-2 2xl:grid-cols-3 gap-4 flex-[2] min-w-[30rem]"):
