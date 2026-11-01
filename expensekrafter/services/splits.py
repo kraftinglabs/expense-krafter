@@ -6,13 +6,20 @@ credits linked to the expense with a ReimbursementLink (one credit can cover
 several splits or people, one person can pay in parts). Spend analysis takes
 linked repayments off the expense itself, so only your share counts as spend
 once everyone has paid.
+
+Pending splits: a card expense whose statement hasn't been imported yet is
+recorded as a placeholder transaction (expected=True) on that account. It
+holds the shares and any repayments, never counts as spend (so a repayment
+linked to it is held aside rather than counted), and is swapped for the real
+row when the statement comes in (attach_pending).
 """
 
 from __future__ import annotations
 
+import uuid
 from collections import defaultdict
 from dataclasses import dataclass, field
-from datetime import date
+from datetime import date, timedelta
 
 from sqlmodel import col, select
 
@@ -57,10 +64,12 @@ class Split:
     amount_minor: int
     people: list[PersonShare] = field(default_factory=list)
     repayments: list[Repayment] = field(default_factory=list)
+    expected: bool = False  # pending: the card statement with it isn't imported yet
+    account_id: int | None = None
 
     @property
     def name(self) -> str:
-        return merchant_name(self.description)
+        return self.description if self.expected else merchant_name(self.description)
 
     @property
     def owed_minor(self) -> int:
@@ -146,12 +155,122 @@ def save_split(expense_txn_id: int, shares: dict[str, int]) -> None:
 def delete_split(expense_txn_id: int) -> None:
     """Forget the split and its repayment links. The repayment credits stay
     marked as reimbursements, so they still count against spend on the day
-    they arrived."""
+    they arrived. A pending split's placeholder goes too."""
     with get_session() as s:
         for row in s.exec(select(SplitShare).where(SplitShare.expense_txn_id == expense_txn_id)):
             s.delete(row)
         for row in s.exec(select(ReimbursementLink).where(ReimbursementLink.expense_txn_id == expense_txn_id)):
             s.delete(row)
+        s.flush()
+        if (txn := s.get(Transaction, expense_txn_id)) is not None and txn.expected:
+            s.delete(txn)
+        s.commit()
+
+
+# How far the statement date may be from the date you entered for a pending split.
+MATCH_DAYS = 7
+# A pending split this old is probably attached to the wrong account or amount.
+PENDING_OVERDUE_DAYS = 45
+
+
+def create_pending(account_id: int, txn_date: date, amount_minor: int, description: str,
+                   shares: dict[str, int], label_id: int | None = None) -> int:
+    """Record a split for a card expense that isn't imported yet. Returns the
+    placeholder's id (use it like any split's txn_id)."""
+    description = " ".join((description or "").split())
+    if not description:
+        raise SplitError("Say what it was for, so you can recognise it later.")
+    if amount_minor <= 0:
+        raise SplitError("Enter what you paid.")
+    _clean_shares(amount_minor, shares)
+    with get_session() as s:
+        if s.get(Account, account_id) is None:
+            raise SplitError("Pick the card or account you paid with.")
+        txn = Transaction(account_id=account_id, txn_date=txn_date, description=description,
+                          amount_minor=amount_minor, direction=Direction.debit, kind=TxnKind.expense,
+                          kind_manual=True, label_id=label_id, fingerprint=f"expected:{uuid.uuid4().hex}",
+                          expected=True)
+        s.add(txn)
+        s.commit()
+        txn_id = txn.id
+    save_split(txn_id, shares)
+    return txn_id
+
+
+def update_pending(txn_id: int, *, txn_date: date, amount_minor: int, description: str) -> None:
+    with get_session() as s:
+        txn = s.get(Transaction, txn_id)
+        if txn is None or not txn.expected:
+            raise SplitError("That split is already attached to its transaction.")
+        owed = sum(sh.amount_minor for sh in s.exec(select(SplitShare).where(SplitShare.expense_txn_id == txn_id)))
+        if amount_minor < owed:
+            raise SplitError(f"The shares add up to {fmt(owed)}, more than {fmt(amount_minor)}.")
+        txn.txn_date, txn.amount_minor = txn_date, amount_minor
+        txn.description = " ".join(description.split()) or txn.description
+        s.add(txn)
+        s.commit()
+
+
+def attach_candidates(pending_id: int, txn_ids: set[int] | None = None, nearby_only: bool = True
+                      ) -> list[tuple[Transaction, str]]:
+    """Imported expenses on the pending split's account it could be, best
+    match first: same amount within MATCH_DAYS of its date (or, with
+    nearby_only=False, any expense on that account not split yet)."""
+    with get_session() as s:
+        pending = s.get(Transaction, pending_id)
+        if pending is None or not pending.expected:
+            return []
+        split_ids = set(s.exec(select(SplitShare.expense_txn_id)).all())
+        q = (select(Transaction, Account.name).join(Account, Account.id == Transaction.account_id)
+             .where(Transaction.account_id == pending.account_id, Transaction.direction == Direction.debit,
+                    Transaction.expected == False))  # noqa: E712
+        if nearby_only:
+            window = timedelta(days=MATCH_DAYS)
+            q = q.where(Transaction.amount_minor == pending.amount_minor,
+                        Transaction.txn_date >= pending.txn_date - window,
+                        Transaction.txn_date <= pending.txn_date + window)
+        rows = [(t, acc) for t, acc in s.exec(q).all()
+                if t.id not in split_ids and (txn_ids is None or t.id in txn_ids)]
+    return sorted(rows, key=lambda r: (abs(r[0].amount_minor - pending.amount_minor),
+                                       abs((r[0].txn_date - pending.txn_date).days), -r[0].txn_date.toordinal()))
+
+
+def pending_matches(txn_ids: set[int]) -> list[tuple[Split, list[tuple[Transaction, str]]]]:
+    """For a fresh import: pending splits that look like one of these new rows."""
+    out = []
+    for sp in splits():
+        if sp.expected and (found := attach_candidates(sp.txn_id, txn_ids)):
+            out.append((sp, found))
+    return out
+
+
+def attach_pending(pending_id: int, txn_id: int) -> None:
+    """Move a pending split (shares and repayments) onto the imported
+    transaction and drop the placeholder. The transaction takes the pending
+    split's label (if it has none) and its description as a note."""
+    with get_session() as s:
+        pending = s.get(Transaction, pending_id)
+        txn = s.get(Transaction, txn_id)
+        if pending is None or not pending.expected:
+            raise SplitError("That split is already attached.")
+        if txn is None or txn.expected or txn.direction != Direction.debit:
+            raise SplitError("Pick an imported expense.")
+        if s.exec(select(SplitShare).where(SplitShare.expense_txn_id == txn_id)).first():
+            raise SplitError("That transaction already has a split.")
+        shares = list(s.exec(select(SplitShare).where(SplitShare.expense_txn_id == pending_id)))
+        if sum(sh.amount_minor for sh in shares) > txn.amount_minor:
+            raise SplitError(f"The shares add up to more than that transaction ({fmt(txn.amount_minor)}).")
+        for row in shares + list(s.exec(select(ReimbursementLink)
+                                        .where(ReimbursementLink.expense_txn_id == pending_id))):
+            row.expense_txn_id = txn_id
+            s.add(row)
+        if txn.label_id is None:
+            txn.label_id = pending.label_id
+        if not txn.notes:
+            txn.notes = pending.description
+        s.add(txn)
+        s.flush()
+        s.delete(pending)
         s.commit()
 
 
@@ -221,7 +340,8 @@ def splits() -> list[Split]:
         credits = {t.id: (t, acc) for t, acc in s.exec(
             select(Transaction, Account.name).join(Account, Account.id == Transaction.account_id)
             .where(col(Transaction.id).in_({ln.credit_txn_id for ln in links})))}
-    out = {t.id: Split(t.id, t.txn_date, t.description, acc, lab or "", t.amount_minor) for t, acc, lab in rows}
+    out = {t.id: Split(t.id, t.txn_date, t.description, acc, lab or "", t.amount_minor, expected=t.expected,
+                       account_id=t.account_id) for t, acc, lab in rows}
     for sh in shares:
         out[sh.expense_txn_id].people.append(PersonShare(sh.person, sh.amount_minor))
     for ln in links:
@@ -255,7 +375,8 @@ def expense_candidates(query: str = "", limit: int = 60) -> list[tuple[Transacti
     """Money you paid out that could be split, newest first."""
     with get_session() as s:
         rows = s.exec(select(Transaction, Account.name).join(Account, Account.id == Transaction.account_id)
-                      .where(Transaction.direction == Direction.debit, Transaction.kind == TxnKind.expense)
+                      .where(Transaction.direction == Direction.debit, Transaction.kind == TxnKind.expense,
+                             Transaction.expected == False)  # noqa: E712
                       .order_by(col(Transaction.txn_date).desc(), col(Transaction.id).desc())).all()
     out = []
     for t, acc in rows:

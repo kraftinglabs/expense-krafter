@@ -10,7 +10,7 @@ from nicegui import events, ui
 
 from ..db.models import AccountType, Direction, TxnKind
 from ..importers import PasswordRequired, parser_options
-from ..services import analytics, importer, inbox, ledger, narration, vault
+from ..services import analytics, importer, inbox, ledger, narration, splits, vault
 from ..services.importer import ImportPreview, default_kind, commit_import, preview_import
 from ..services.money import fmt
 from . import icons
@@ -335,6 +335,46 @@ def import_page() -> None:
                 inbox.remove(done)
                 sent.refresh()
             overview.refresh()
+            if matches := splits.pending_matches(importer.batch_txn_ids(batch.id)):
+                attach_pending(matches)
+
+        def attach_pending(matches) -> None:
+            """Pending splits that showed up in this statement: attach them in one go."""
+            picks = []
+            with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[44rem] max-w-full gap-3"):
+                ui.label("Splits waiting for this statement").classes("et-card-title")
+                ui.label("These look like splits you recorded before the statement came in. Attach them and "
+                         "their shares and repayments move onto the imported transactions.") \
+                    .classes("text-sm et-muted")
+                for sp, found in matches:
+                    with ui.column().classes("w-full gap-1 et-hero-rule pt-2"):
+                        tick = ui.checkbox(f"{sp.name} · {sp.txn_date:%d %b %Y} · {fmt(sp.amount_minor)}", value=True)
+                        choice = ui.select({t.id: f"{t.txn_date:%d %b %Y} · {analytics.merchant_name(t.description)}"
+                                                  f" · {fmt(t.amount_minor)}" for t, _ in found},
+                                           value=found[0][0].id).props("outlined dense options-dense") \
+                            .classes("w-full pl-8")
+                        choice.bind_enabled_from(tick, "value")
+                        picks.append((sp, tick, choice))
+
+                def attach() -> None:
+                    done = 0
+                    for sp, tick, choice in picks:
+                        if not tick.value or choice.value is None:
+                            continue
+                        try:
+                            splits.attach_pending(sp.txn_id, choice.value)
+                            done += 1
+                        except splits.SplitError as exc:
+                            ui.notify(f"{sp.name}: {exc}", type="warning")
+                    if done:
+                        ui.notify(f"Attached {done} split{'s' if done != 1 else ''}", type="positive")
+                    dlg.close()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Not now", on_click=dlg.close).props("flat")
+                    ui.button("Attach", icon="link", on_click=attach)
+            dlg.on("hide", dlg.delete)
+            dlg.open()
 
         @ui.refreshable
         def overview() -> None:

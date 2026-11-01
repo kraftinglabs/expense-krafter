@@ -187,6 +187,12 @@ def commit_import(preview: ImportPreview, selected: set[str] | None = None) -> I
         return batch
 
 
+def batch_txn_ids(batch_id: int) -> set[int]:
+    """The transactions one import added."""
+    with get_session() as s:
+        return set(s.exec(select(Transaction.id).where(Transaction.import_id == batch_id)).all())
+
+
 @dataclass
 class HistoryRow:
     batch: ImportBatch
@@ -216,10 +222,12 @@ def account_statuses() -> list[AccountStatus]:
         accounts = s.exec(select(Account).where(Account.active == True)  # noqa: E712
                           .order_by(Account.type, Account.name)).all()
         counts = dict(s.exec(select(Transaction.account_id, func.count())
+                             .where(Transaction.expected == False)  # noqa: E712
                              .group_by(Transaction.account_id)).all())
         out = []
         for acc in accounts:
-            last_txn = s.exec(select(Transaction).where(Transaction.account_id == acc.id)
+            last_txn = s.exec(select(Transaction).where(Transaction.account_id == acc.id,
+                                                        Transaction.expected == False)  # noqa: E712
                               .order_by(Transaction.txn_date.desc(), Transaction.id.desc())).first()
             last_import = s.exec(select(ImportBatch).where(ImportBatch.account_id == acc.id)
                                  .order_by(ImportBatch.imported_at.desc(), ImportBatch.id.desc())).first()

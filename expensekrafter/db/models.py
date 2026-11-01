@@ -128,6 +128,10 @@ class Transaction(SQLModel, table=True):
     # Card transactions: the statement they were billed on.
     cc_statement_id: Optional[int] = Field(default=None, foreign_key="ccstatement.id")
     notes: str = ""
+    # A placeholder for a split you paid by card before its statement was
+    # imported. It holds the split and repayments until the real row arrives,
+    # and never counts as spend or shows as a transaction (see splits.py).
+    expected: bool = False
 
 
 class SkippedRow(SQLModel, table=True):

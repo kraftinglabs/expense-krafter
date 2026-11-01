@@ -7,6 +7,7 @@ from datetime import date
 
 from nicegui import ui
 
+from ..db.models import AccountType
 from ..services import ledger, payroll, splits
 from ..services.money import fmt, to_minor
 from .layout import frame
@@ -59,7 +60,8 @@ def splits_page() -> None:
         @ui.refreshable
         def content() -> None:
             everything = splits.splits()
-            open_ = [sp for sp in everything if not sp.settled]
+            open_ = [sp for sp in everything if not sp.settled or sp.expected]
+            pending = [sp for sp in everything if sp.expected]
             with ui.row().classes("w-full gap-4"):
                 owed = sum(sp.remaining_minor for sp in everything)
                 waiting = sorted({p.person for sp in open_ for p in sp.people if p.remaining_minor})
@@ -67,7 +69,9 @@ def splits_page() -> None:
                      f"by {len(waiting)} {'person' if len(waiting) == 1 else 'people'}" if waiting else "all settled")
                 _kpi("Paid back", _rupees(sum(sp.paid_minor for sp in everything)), "savings",
                      f"of {_rupees(sum(sp.owed_minor for sp in everything))} shared")
-                _kpi("Open splits", str(len(open_)), "call_split", f"{len(everything) - len(open_)} settled")
+                _kpi("Open splits", str(len(open_)), "call_split",
+                     f"{len(pending)} waiting for a card statement" if pending
+                     else f"{len(everything) - len(open_)} settled")
 
             loose = splits.unassigned_reimbursements()
             if loose:
@@ -106,12 +110,23 @@ def splits_page() -> None:
                     with ui.column().classes("gap-0 items-end"):
                         ui.label(fmt(sp.amount_minor)).classes("et-num font-semibold")
                         ui.label(f"your share {fmt(sp.your_share_minor)}").classes("text-xs et-faint et-num")
+                    if sp.expected:
+                        age = (date.today() - sp.txn_date).days
+                        overdue = age > splits.PENDING_OVERDUE_DAYS
+                        ui.label("Not in a statement yet" if overdue else "Waiting for statement") \
+                            .classes("et-chip warn flex-none" if overdue else "et-chip flex-none") \
+                            .tooltip(f"{age} days and no imported transaction matched it: check the amount and "
+                                     "account, or attach it by hand" if overdue else
+                                     "Attached automatically when you import the statement with it")
                     if sp.settled:
                         ui.label("✓ Settled").classes("et-chip accent flex-none")
                     else:
                         ui.label(f"{fmt(sp.remaining_minor)} to come").classes("et-chip warn flex-none")
                     with ui.button(icon="more_vert").props("flat round dense"):
                         with ui.menu():
+                            if sp.expected:
+                                ui.menu_item("Attach to imported transaction", on_click=lambda sp=sp: attach_dialog(sp))
+                                ui.menu_item("Edit date, amount, name", on_click=lambda sp=sp: pending_dialog(sp))
                             ui.menu_item("Edit shares", on_click=lambda sp=sp: split_dialog(sp))
                             ui.menu_item("Delete split", on_click=lambda sp=sp: confirm_delete(sp))
                 for p in sp.people:
@@ -177,12 +192,47 @@ def splits_page() -> None:
                     candidates = splits.expense_candidates(limit=400)
                     amounts = {t.id: t.amount_minor for t, _ in candidates}
                     total = {"minor": 0}
-                    expense = ui.select({t.id: _expense_option(t, acc) for t, acc in candidates},
-                                        label="Expense you paid", with_input=True,
-                                        on_change=lambda e: (total.update(minor=amounts.get(e.value, 0)),
-                                                             refresh_share())) \
-                        .props("outlined dense options-dense").classes("w-full")
-                    ui.label("Type to search by name, account or amount.").classes("text-xs et-faint -mt-2")
+                    mode = ui.toggle({"imported": "Already imported", "pending": "Card statement not in yet"},
+                                     value="imported", on_change=lambda e: switch_mode()) \
+                        .props("unelevated no-caps dense toggle-color=primary color=transparent "
+                               "text-color=grey-8 padding='4px 12px'").classes("et-segment")
+                    with ui.column().classes("w-full gap-2") as imported_box:
+                        expense = ui.select({t.id: _expense_option(t, acc) for t, acc in candidates},
+                                            label="Expense you paid", with_input=True,
+                                            on_change=lambda e: (total.update(minor=amounts.get(e.value, 0)),
+                                                                 refresh_share())) \
+                            .props("outlined dense options-dense").classes("w-full")
+                        ui.label("Type to search by name, account or amount.").classes("text-xs et-faint -mt-1")
+                    with ui.column().classes("w-full gap-2") as pending_box:
+                        ui.label("Record it now; it's matched to the card transaction when you import that "
+                                 "statement.").classes("text-xs et-muted")
+                        accounts = ledger.accounts()
+                        cards = [a for a in accounts if a.type == AccountType.credit_card]
+                        with ui.row().classes("w-full gap-2 no-wrap"):
+                            p_account = ui.select({a.id: a.name for a in accounts}, label="Paid with",
+                                                  value=(cards or accounts)[0].id if accounts else None) \
+                                .props("outlined dense options-dense").classes("flex-1")
+                            p_date = ui.input("Date", value=date.today().isoformat()) \
+                                .props("outlined dense type=date").classes("w-40")
+                            p_amount = ui.number("Amount ₹", min=0, format="%.2f",
+                                                 on_change=lambda e: (total.update(minor=to_minor(e.value or 0)),
+                                                                      refresh_share())) \
+                                .props("outlined dense stack-label").classes("w-36")
+                        with ui.row().classes("w-full gap-2 no-wrap"):
+                            p_name = ui.input("What for", placeholder="e.g. Dinner at Toit") \
+                                .props("outlined dense").classes("flex-1")
+                            p_label = ui.select({lab.id: lab.name for lab in ledger.labels()}, label="Label",
+                                                with_input=True, clearable=True) \
+                                .props("outlined dense options-dense").classes("w-48")
+                    pending_box.set_visibility(False)
+
+                    def switch_mode() -> None:
+                        is_pending = mode.value == "pending"
+                        imported_box.set_visibility(not is_pending)
+                        pending_box.set_visibility(is_pending)
+                        total.update(minor=to_minor(p_amount.value or 0) if is_pending
+                                     else amounts.get(expense.value, 0))
+                        refresh_share()
 
                 ui.label("Who owes you").classes("text-sm font-medium mt-2")
                 people_box = ui.column().classes("w-full gap-2")
@@ -191,7 +241,9 @@ def splits_page() -> None:
                 def refresh_share() -> None:
                     others = sum(to_minor(r["amount"].value or 0) for r in rows)
                     mine = total["minor"] - others
-                    share_line.text = (f"Your share: {fmt(mine)}" if total["minor"] else "Pick the expense first")
+                    pending_mode = not sp and mode.value == "pending"
+                    share_line.text = (f"Your share: {fmt(mine)}" if total["minor"]
+                                       else "Enter what you paid" if pending_mode else "Pick the expense first")
                     share_line.classes(replace="text-sm et-num " + ("et-warn" if mine < 0 else ""))
 
                 def add_row(name: str = "", amount: float | None = None) -> None:
@@ -230,13 +282,24 @@ def splits_page() -> None:
                     add_row()
 
                 def save() -> None:
-                    txn_id = sp.txn_id if sp else expense.value
-                    if txn_id is None:
-                        ui.notify("Pick the expense first", type="warning")
-                        return
                     shares = {r["name"].value or "": to_minor(r["amount"].value or 0) for r in rows}
                     if len(shares) < len(rows):
                         ui.notify("Each person once, please", type="warning")
+                        return
+                    if not sp and mode.value == "pending":
+                        try:
+                            day = date.fromisoformat(p_date.value)
+                        except (TypeError, ValueError):
+                            ui.notify("Pick the date", type="warning")
+                            return
+                        if act(splits.create_pending, p_account.value, day, to_minor(p_amount.value or 0),
+                               p_name.value or "", shares, p_label.value, done="Split saved; it'll be matched "
+                                                                                "when the statement comes in"):
+                            dlg.close()
+                        return
+                    txn_id = sp.txn_id if sp else expense.value
+                    if txn_id is None:
+                        ui.notify("Pick the expense first", type="warning")
                         return
                     if act(splits.save_split, txn_id, shares, done="Split saved"):
                         dlg.close()
@@ -244,6 +307,60 @@ def splits_page() -> None:
                 with ui.row().classes("w-full justify-end"):
                     ui.button("Cancel", on_click=dlg.close).props("flat")
                     ui.button("Save", icon="check", on_click=save)
+            dlg.on("hide", dlg.delete)
+            dlg.open()
+
+        def pending_dialog(sp: splits.Split) -> None:
+            with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[30rem] max-w-full gap-3"):
+                ui.label("Edit pending split").classes("et-card-title")
+                ui.label(f"Paid with {sp.account}").classes("et-muted text-sm")
+                name = ui.input("What for", value=sp.name).props("outlined dense").classes("w-full")
+                with ui.row().classes("w-full gap-2 no-wrap"):
+                    day = ui.input("Date", value=sp.txn_date.isoformat()).props("outlined dense type=date") \
+                        .classes("flex-1")
+                    amount = ui.number("Amount ₹", value=sp.amount_minor / 100, min=0, format="%.2f") \
+                        .props("outlined dense stack-label").classes("flex-1")
+
+                def save() -> None:
+                    try:
+                        when = date.fromisoformat(day.value)
+                    except (TypeError, ValueError):
+                        ui.notify("Pick the date", type="warning")
+                        return
+                    if act(splits.update_pending, sp.txn_id, txn_date=when, amount_minor=to_minor(amount.value or 0),
+                           description=name.value or "", done="Saved"):
+                        dlg.close()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Save", icon="check", on_click=save)
+            dlg.on("hide", dlg.delete)
+            dlg.open()
+
+        def attach_dialog(sp: splits.Split) -> None:
+            nearby = splits.attach_candidates(sp.txn_id)
+            options = nearby or splits.attach_candidates(sp.txn_id, nearby_only=False)
+            with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[40rem] max-w-full gap-3"):
+                ui.label(f"Attach “{sp.name}”").classes("et-card-title")
+                ui.label(f"{fmt(sp.amount_minor)} on {sp.account} around {sp.txn_date:%d %b %Y}").classes("et-muted")
+                if not nearby:
+                    ui.label("Nothing on that account with the same amount near that date; showing all its "
+                             "expenses." if options else f"No imported expenses on {sp.account} yet. Import its "
+                             "statement first.").classes("et-warn text-sm")
+                choice = ui.select({t.id: _expense_option(t, acc) for t, acc in options}, with_input=True,
+                                   label="Imported transaction", value=options[0][0].id if nearby else None) \
+                    .props("outlined dense options-dense").classes("w-full")
+                ui.label("Its shares and repayments move onto that transaction.").classes("text-xs et-faint")
+
+                def attach() -> None:
+                    if choice.value is None:
+                        return
+                    if act(splits.attach_pending, sp.txn_id, choice.value, done="Attached"):
+                        dlg.close()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Attach", icon="link", on_click=attach)
             dlg.on("hide", dlg.delete)
             dlg.open()
 

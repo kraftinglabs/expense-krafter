@@ -31,7 +31,8 @@ def cards_page() -> None:
             card_accounts = {i: a.name for i, a in card_objs.items()}
             bank_debits = s.exec(
                 select(Transaction, Account.name).join(Account, Account.id == Transaction.account_id)
-                .where(Account.type == AccountType.bank, Transaction.direction == Direction.debit)
+                .where(Account.type == AccountType.bank, Transaction.direction == Direction.debit,
+                       Transaction.expected == False)  # noqa: E712
                 .order_by(col(Transaction.txn_date).desc()).limit(300)
             ).all()
 

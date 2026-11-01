@@ -68,6 +68,12 @@ def _m006_label_parent(conn: Connection) -> None:
         conn.exec_driver_sql("ALTER TABLE label ADD COLUMN parent_id INTEGER REFERENCES label (id)")
 
 
+def _m007_expected_txn(conn: Connection) -> None:
+    """transaction.expected: placeholder for a split whose statement isn't imported yet."""
+    if "expected" not in _columns(conn, "transaction"):
+        conn.exec_driver_sql('ALTER TABLE "transaction" ADD COLUMN expected BOOLEAN NOT NULL DEFAULT 0')
+
+
 MIGRATIONS = [
     _m001_mask_account_number,
     _m002_database_id,
@@ -75,6 +81,7 @@ MIGRATIONS = [
     _m004_kind_manual,
     _m005_label_interval,
     _m006_label_parent,
+    _m007_expected_txn,
 ]
 
 

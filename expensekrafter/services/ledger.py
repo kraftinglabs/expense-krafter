@@ -86,6 +86,7 @@ class TxnFilter:
 
 
 def _where(q, f: TxnFilter):
+    q = q.where(Transaction.expected == False)  # noqa: E712  (pending-split placeholders live on Splits)
     if f.account_id:
         q = q.where(Transaction.account_id == f.account_id)
     if f.unlabelled_only:

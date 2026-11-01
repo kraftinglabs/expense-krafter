@@ -105,7 +105,7 @@ def _frame(where, period: Period | None, account_id: int | None):
              .join(Account, Account.id == Transaction.account_id)
              .outerjoin(Label, Label.id == Transaction.label_id)
              .outerjoin(Group, Group.id == Label.parent_id)
-             .where(where))
+             .where(where, Transaction.expected == False))  # noqa: E712
         if period:
             q = q.where(Transaction.txn_date >= period.start, Transaction.txn_date < period.end)
         if account_id:
@@ -288,7 +288,7 @@ def recurring_items(months: int = 12) -> pd.DataFrame:
                    Label.name, Label.every, Label.unit)
             .join(Label, Label.id == Transaction.label_id)
             .where(Label.is_recurring == True, Transaction.txn_date >= since,  # noqa: E712
-                   Transaction.direction == Direction.debit)
+                   Transaction.direction == Direction.debit, Transaction.expected == False)  # noqa: E712
             .order_by(Transaction.txn_date)
         ).all()
     if not rows:
