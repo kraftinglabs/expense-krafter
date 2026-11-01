@@ -172,7 +172,7 @@ def _days_elapsed(df: pd.DataFrame, period: analytics.Period | None) -> int:
 def _bar_transactions(rows: pd.DataFrame, label: str, when: str) -> None:
     """Dialog listing the transactions behind one bar of 'Spend over time'."""
     rows = rows.sort_values("amount", ascending=False)
-    several = rows["label_orig"].nunique() > 1  # the chart's "Other" bar holds several labels
+    several = rows["label_orig"].nunique() > 1  # "Other" or a group label holds several labels
     with ui.dialog() as dialog, ui.card().classes("w-[60rem] max-w-full gap-3"):
         with ui.row().classes("w-full items-start no-wrap"):
             with ui.column().classes("gap-0"):
@@ -210,7 +210,7 @@ def spend_over_time(df: pd.DataFrame, period: analytics.Period | None) -> None:
     with _chart_card("Spend over time", subtitle):
         if df.empty:
             return _empty()
-        data = analytics.top_labels(df).assign(label_orig=df["label"])
+        data = analytics.top_labels(df).assign(label_orig=df["sublabel"])
         data["bucket"] = data["date"].dt.strftime("%d %b") if daily else data["date"].dt.strftime("%b %Y")
         data["order"] = data["date"].dt.normalize() if daily else data["date"].dt.to_period("M").dt.start_time
         grouped = data.groupby(["order", "bucket", "label", "color"], as_index=False)["amount"].sum()
@@ -331,6 +331,8 @@ def _label_figure(totals: pd.DataFrame, kind: str, height: int | None = None) ->
 def _label_breakdown(df: pd.DataFrame, kind: str) -> None:
     """Dialog with every label: the chart plus a table of amounts and shares."""
     totals = analytics.label_totals(df)
+    groups = set(df.loc[df["sublabel"] != df["label"], "label"])  # group labels with labels inside
+    inside = df[df["label"].isin(groups)].groupby(["label", "sublabel"])["amount"].sum()
     with ui.dialog() as dialog, ui.card().classes("w-[56rem] max-w-full gap-4"):
         with ui.row().classes("w-full items-center no-wrap"):
             with ui.column().classes("gap-0"):
@@ -348,6 +350,12 @@ def _label_breakdown(df: pd.DataFrame, kind: str) -> None:
                         ui.label(r.label).classes("flex-1 truncate text-sm")
                         ui.label(f"{r.share:.1f}%").classes("et-faint text-xs et-num w-12 text-right")
                         ui.label(_rupees(r.amount)).classes("et-num text-sm font-medium w-24 text-right")
+                    if r.label in inside.index.get_level_values(0):
+                        for sub, amount in inside[r.label].sort_values(ascending=False).items():
+                            with ui.row().classes("w-full items-center no-wrap gap-3 py-1 pl-6"):
+                                ui.icon("subdirectory_arrow_right").classes("et-faint text-sm")
+                                ui.label(sub).classes("flex-1 truncate text-xs et-muted")
+                                ui.label(_rupees(amount)).classes("et-num text-xs et-muted w-24 text-right")
     dialog.on("hide", dialog.delete)
     dialog.open()
 
@@ -479,7 +487,7 @@ def largest_expenses(df: pd.DataFrame, n: int = 10) -> None:
                 {"name": "account", "label": "Account", "field": "account", "align": "left"},
                 {"name": "amount", "label": "Amount", "field": "amount", "align": "right"},
             ],
-            rows=[{"date": r.date.strftime("%d %b %Y"), "merchant": r.merchant, "label": r.label,
+            rows=[{"date": r.date.strftime("%d %b %Y"), "merchant": r.merchant, "label": r.sublabel,
                    "color": r.color, "account": r.account, "amount": _rupees(r.amount)} for r in top.itertuples()],
         ).props("flat dense").classes("w-full")
         table.add_slot("body-cell-label", r'''

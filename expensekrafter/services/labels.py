@@ -1,11 +1,11 @@
-"""Labels: create with an automatic colour, edit, and delete only when unused."""
+"""Labels: create with an automatic colour, edit, group, and delete only when unused."""
 
 from __future__ import annotations
 
 import random
 
 from sqlalchemy import func
-from sqlmodel import select
+from sqlmodel import col, select
 
 from ..db import get_session
 from ..db.models import ExpenseGroup, IntervalUnit, Label, PayrollReimbursement, Transaction
@@ -83,11 +83,39 @@ def _check_name(name: str, label_id: int | None = None) -> str:
     return name
 
 
+def _check_parent(parent_id: int | None, label_id: int | None = None) -> int | None:
+    """Groups are one level deep: the parent can't be in a group itself, and a
+    label that already holds others can't go into one."""
+    if parent_id is None:
+        return None
+    if parent_id == label_id:
+        raise ValueError("A label can't be its own group")
+    with get_session() as s:
+        parent = s.get(Label, parent_id)
+        if parent is None:
+            raise ValueError("That group label no longer exists")
+        if parent.parent_id is not None:
+            raise ValueError(f"'{parent.name}' is itself inside a group; pick a top-level label")
+        if label_id is not None and s.exec(select(Label).where(Label.parent_id == label_id)).first():
+            raise ValueError("This label is a group for other labels, so it can't go into a group")
+    return parent_id
+
+
+def with_children(label_ids: set[int]) -> set[int]:
+    """The labels plus every label grouped under them."""
+    if not label_ids:
+        return set()
+    with get_session() as s:
+        kids = s.exec(select(Label.id).where(col(Label.parent_id).in_(label_ids))).all()
+    return set(label_ids) | set(kids)
+
+
 def create_label(name: str, recurring: bool = False, every: int | None = 1,
-                 unit: IntervalUnit | None = IntervalUnit.month, color: str | None = None) -> Label:
+                 unit: IntervalUnit | None = IntervalUnit.month, color: str | None = None,
+                 parent_id: int | None = None) -> Label:
     every, unit = _interval(recurring, every, unit)
     label = Label(name=_check_name(name), color=color or pick_color(), is_recurring=recurring,
-                  every=every, unit=unit)
+                  every=every, unit=unit, parent_id=_check_parent(parent_id))
     with get_session() as s:
         s.add(label)
         s.commit()
@@ -96,14 +124,17 @@ def create_label(name: str, recurring: bool = False, every: int | None = 1,
 
 
 def update_label(label_id: int, *, name: str, color: str, recurring: bool,
-                 every: int | None = 1, unit: IntervalUnit | None = IntervalUnit.month) -> Label:
+                 every: int | None = 1, unit: IntervalUnit | None = IntervalUnit.month,
+                 parent_id: int | None = None) -> Label:
     every, unit = _interval(recurring, every, unit)
+    parent_id = _check_parent(parent_id, label_id)
     with get_session() as s:
         label = s.get(Label, label_id)
         label.name = _check_name(name, label_id)
         label.color = color
         label.is_recurring = recurring
         label.every, label.unit = every, unit
+        label.parent_id = parent_id
         s.add(label)
         s.commit()
         s.refresh(label)
@@ -114,5 +145,8 @@ def delete_label(label_id: int) -> None:
     if (n := usage_count(label_id)):
         raise ValueError(f"Label is used by {n} transaction{'s' if n != 1 else ''}; it can't be deleted")
     with get_session() as s:
+        for child in s.exec(select(Label).where(Label.parent_id == label_id)):
+            child.parent_id = None  # its labels stay, just ungrouped
+            s.add(child)
         s.delete(s.get(Label, label_id))
         s.commit()

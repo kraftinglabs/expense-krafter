@@ -11,6 +11,9 @@ income vs spend and the savings rate can be shown. Reimbursements paid inside
 the salary are taken off income too: they pay back spending, they aren't earnings.
 Card bill payments and transfers between your own accounts are neither, so
 nothing is counted twice.
+
+Labels inside a group label count as the group ("SIP" -> "Investments", in the
+group's colour); the label itself is kept in the `sublabel` column.
 """
 
 from __future__ import annotations
@@ -20,6 +23,7 @@ from dataclasses import dataclass
 from datetime import date, timedelta
 
 import pandas as pd
+from sqlalchemy.orm import aliased
 from sqlmodel import select
 
 from ..db import get_session
@@ -29,7 +33,8 @@ from . import labels, narration
 UNLABELLED = "Unlabelled"
 UNLABELLED_COLOR = "#a9aeab"
 PAID_IN_SALARY = "Reimbursed in salary"
-COLUMNS = ["id", "date", "account", "label", "color", "merchant", "description", "amount"]
+COLUMNS = ["id", "date", "account", "label", "color", "merchant", "description", "amount", "sublabel"]
+Group = aliased(Label)
 
 _NOISE = re.compile(
     r"^(upi|pos|neft|imps|rtgs|ach|nach|ecom|vps|ipay|bil|mmt|atw|nfs|inb)[\s\-/:]+|"
@@ -94,23 +99,27 @@ def period_for(key: str, today: date | None = None) -> Period | None:
 
 
 def _frame(where, period: Period | None, account_id: int | None):
+    """(transaction, account, label or its group, colour, label) rows."""
     with get_session() as s:
-        q = (select(Transaction, Account.name, Label.name, Label.color)
+        q = (select(Transaction, Account.name, Label.name, Label.color, Group.name, Group.color)
              .join(Account, Account.id == Transaction.account_id)
              .outerjoin(Label, Label.id == Transaction.label_id)
+             .outerjoin(Group, Group.id == Label.parent_id)
              .where(where))
         if period:
             q = q.where(Transaction.txn_date >= period.start, Transaction.txn_date < period.end)
         if account_id:
             q = q.where(Transaction.account_id == account_id)
-        return s.exec(q).all()
+        return [(t, acc, group or lab, group_color or color, lab)
+                for t, acc, lab, color, group, group_color in s.exec(q).all()]
 
 
-def _record(t: Transaction, acc: str, lab: str | None, color: str | None, amount_minor: int) -> dict:
+def _record(t: Transaction, acc: str, lab: str | None, color: str | None, sub: str | None,
+            amount_minor: int) -> dict:
     return {"id": t.id, "date": pd.Timestamp(t.txn_date), "account": acc,
             "label": lab or UNLABELLED, "color": color or UNLABELLED_COLOR,
             "merchant": merchant_name(t.description), "description": t.description,
-            "amount": amount_minor / 100}
+            "amount": amount_minor / 100, "sublabel": sub or UNLABELLED}
 
 
 def spend_frame(period: Period | None = None, account_id: int | None = None) -> pd.DataFrame:
@@ -130,7 +139,7 @@ def spend_frame(period: Period | None = None, account_id: int | None = None) -> 
             from_credit[link.credit_txn_id] = from_credit.get(link.credit_txn_id, 0) + link.amount_minor
 
     records = []
-    for t, acc, lab, color in rows:
+    for t, acc, lab, color, sub in rows:
         if t.kind == TxnKind.refund:
             amount = -t.amount_minor
         elif t.kind == TxnKind.reimbursement:
@@ -140,7 +149,7 @@ def spend_frame(period: Period | None = None, account_id: int | None = None) -> 
                 continue
         else:
             amount = t.amount_minor - off_expense.get(t.id, 0)
-        records.append(_record(t, acc, lab, color, amount))
+        records.append(_record(t, acc, lab, color, sub, amount))
     records += _payroll_records(period, account_id)
     return pd.DataFrame(records, columns=COLUMNS)
 
@@ -148,24 +157,26 @@ def spend_frame(period: Period | None = None, account_id: int | None = None) -> 
 def _payroll_records(period: Period | None, account_id: int | None) -> list[dict]:
     """Reimbursements paid inside the salary, as negative rows on the day they were paid."""
     with get_session() as s:
-        q = (select(PayrollReimbursement, Account.name, Label.name, Label.color)
+        q = (select(PayrollReimbursement, Account.name, Label.name, Label.color, Group.name, Group.color)
              .outerjoin(Account, Account.id == PayrollReimbursement.account_id)
-             .outerjoin(Label, Label.id == PayrollReimbursement.label_id))
+             .outerjoin(Label, Label.id == PayrollReimbursement.label_id)
+             .outerjoin(Group, Group.id == Label.parent_id))
         if period:
             q = q.where(PayrollReimbursement.paid_on >= period.start, PayrollReimbursement.paid_on < period.end)
         if account_id:
             q = q.where(PayrollReimbursement.account_id == account_id)
         rows = s.exec(q).all()
-    return [{"id": None, "date": pd.Timestamp(p.paid_on), "account": acc or "", "label": lab or UNLABELLED,
-             "color": color or UNLABELLED_COLOR, "merchant": PAID_IN_SALARY, "description": p.note,
-             "amount": -p.amount_minor / 100} for p, acc, lab, color in rows]
+    return [{"id": None, "date": pd.Timestamp(p.paid_on), "account": acc or "",
+             "label": group or lab or UNLABELLED, "color": group_color or color or UNLABELLED_COLOR,
+             "merchant": PAID_IN_SALARY, "description": p.note, "amount": -p.amount_minor / 100,
+             "sublabel": lab or UNLABELLED} for p, acc, lab, color, group, group_color in rows]
 
 
 def income_frame(period: Period | None = None, account_id: int | None = None) -> pd.DataFrame:
     """One row per income credit (salary, interest...), in rupees."""
     rows = _frame((Transaction.kind == TxnKind.income) & (Transaction.direction == Direction.credit),
                   period, account_id)
-    records = [_record(t, acc, lab, color, t.amount_minor) for t, acc, lab, color in rows]
+    records = [_record(t, acc, lab, color, sub, t.amount_minor) for t, acc, lab, color, sub in rows]
     return pd.DataFrame(records + _payroll_records(period, account_id), columns=COLUMNS)
 
 

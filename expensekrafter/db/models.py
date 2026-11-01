@@ -90,6 +90,9 @@ class Label(SQLModel, table=True):
     # Recurring labels repeat every `every` units, e.g. 6 months = half-yearly.
     every: Optional[int] = None
     unit: Optional[IntervalUnit] = None
+    # Group label this one rolls up into (SIP -> Investments). One level only:
+    # a group can't itself sit in a group.
+    parent_id: Optional[int] = Field(default=None, foreign_key="label.id")
 
 
 class ExpenseGroup(SQLModel, table=True):

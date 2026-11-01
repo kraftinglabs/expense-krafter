@@ -62,12 +62,19 @@ def _m005_label_interval(conn: Connection) -> None:
         conn.exec_driver_sql("ALTER TABLE label DROP COLUMN frequency")
 
 
+def _m006_label_parent(conn: Connection) -> None:
+    """label.parent_id: the group label a label rolls up into."""
+    if "parent_id" not in _columns(conn, "label"):
+        conn.exec_driver_sql("ALTER TABLE label ADD COLUMN parent_id INTEGER REFERENCES label (id)")
+
+
 MIGRATIONS = [
     _m001_mask_account_number,
     _m002_database_id,
     _m003_account_icon,
     _m004_kind_manual,
     _m005_label_interval,
+    _m006_label_parent,
 ]
 
 

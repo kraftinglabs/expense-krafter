@@ -180,26 +180,41 @@ def interval_picker(every: int | None = 1, unit: IntervalUnit | None = IntervalU
     return value
 
 
+NO_GROUP = 0  # "no group" in the group select (None can't be told apart from "nothing picked")
+
+
+def _group_options(exclude: int | None = None) -> dict[int, str]:
+    """Top-level labels a label can be grouped under."""
+    with get_session() as s:
+        tops = s.exec(select(Label).where(Label.parent_id == None).order_by(Label.name)).all()  # noqa: E711
+    return {NO_GROUP: "No group"} | {lab.id: lab.name for lab in tops if lab.id != exclude}
+
+
 @ui.page("/labels")
 def labels_page() -> None:
-    with frame("Labels", "Categories for your spending; recurring ones power the subscriptions view"):
+    with frame("Labels", "Categories for your spending; recurring ones power the subscriptions view. "
+                         "Labels in a group count as the group on the dashboard"):
 
         with ui.card().classes("w-full"):
             ui.label("Add label").classes("et-card-title")
             ui.label("A colour is picked for you; change it any time with Edit.").classes("text-xs et-faint")
             with ui.row().classes("items-end gap-3 mt-2"):
                 name = ui.input("Name").classes("w-56").props("outlined dense")
+                group = ui.select(_group_options(), value=NO_GROUP, label="Group under") \
+                    .props("outlined dense options-dense").classes("w-48")
                 recurring = ui.checkbox("Recurring")
                 interval = interval_picker()
                 interval.row.bind_visibility_from(recurring, "value")
 
                 def add() -> None:
                     try:
-                        lab = labels.create_label(name.value, recurring.value, *interval())
+                        lab = labels.create_label(name.value, recurring.value, *interval(),
+                                                  parent_id=group.value or None)
                     except ValueError as exc:
                         ui.notify(str(exc), type="warning")
                         return
                     name.value = ""
+                    group.set_options(_group_options(), value=NO_GROUP)
                     listing.refresh()
                     ui.notify(f"Added “{lab.name}”", type="positive")
 
@@ -209,7 +224,11 @@ def labels_page() -> None:
         @ui.refreshable
         def listing() -> None:
             with get_session() as s:
-                rows = s.exec(select(Label).order_by(Label.name)).all()
+                everything = s.exec(select(Label).order_by(Label.name)).all()
+            # Each group label followed by the labels inside it.
+            rows = []
+            for top in (lab for lab in everything if lab.parent_id is None):
+                rows += [top] + [lab for lab in everything if lab.parent_id == top.id]
             if not rows:
                 ui.label("No labels yet.").classes("et-muted")
                 return
@@ -218,9 +237,13 @@ def labels_page() -> None:
                     used = labels.usage_count(lab.id)
                     with ui.row().classes("w-full items-center gap-4 no-wrap px-5 py-3") \
                             .style("" if i == 0 else "border-top: var(--hair) solid var(--border)"):
+                        if lab.parent_id:
+                            ui.icon("subdirectory_arrow_right").classes("et-faint flex-none ml-2")
                         ui.html(f'<span class="et-dot" style="width:12px;height:12px;background:{lab.color}"></span>',
                                 sanitize=False).classes("flex-none")
                         ui.label(lab.name).classes("flex-1 min-w-0 et-break")
+                        if (inside := sum(1 for x in everything if x.parent_id == lab.id)):
+                            ui.label(f"Group of {inside}").classes("et-chip accent flex-none")
                         if lab.is_recurring:
                             ui.label(f"Recurring · {labels.interval_name(lab.every, lab.unit).lower()}")                                 .classes("et-chip flex-none")
                         ui.label(f"{used} transaction{'s' if used != 1 else ''}" if used else "Unused") \
@@ -249,6 +272,13 @@ def labels_page() -> None:
                         ui.element("div").classes("cursor-pointer").style(
                             f"width:22px;height:22px;border-radius:3px;background:{c}") \
                             .on("click", lambda c=c: e_color.set_value(c)).tooltip(c)
+                holds = labels.with_children({lab.id}) - {lab.id}
+                e_group = ui.select(_group_options(exclude=lab.id), value=lab.parent_id or NO_GROUP,
+                                    label="Group under").props("outlined dense options-dense").classes("w-full")
+                if holds:
+                    e_group.disable()
+                    ui.label("It's a group for other labels, so it can't go into a group itself.") \
+                        .classes("text-xs et-faint -mt-2")
                 e_rec = ui.checkbox("Recurring", value=lab.is_recurring)
                 e_interval = interval_picker(lab.every, lab.unit)
                 e_interval.row.bind_visibility_from(e_rec, "value")
@@ -257,12 +287,14 @@ def labels_page() -> None:
                     every, unit = e_interval()
                     try:
                         labels.update_label(lab.id, name=e_name.value, color=e_color.value or lab.color,
-                                            recurring=e_rec.value, every=every, unit=unit)
+                                            recurring=e_rec.value, every=every, unit=unit,
+                                            parent_id=e_group.value or None)
                     except ValueError as exc:
                         ui.notify(str(exc), type="warning")
                         return
                     dlg.close()
                     listing.refresh()
+                    group.set_options(_group_options(), value=NO_GROUP)
 
                 with ui.row().classes("w-full justify-end"):
                     ui.button("Cancel", on_click=dlg.close).props("flat")
@@ -272,7 +304,9 @@ def labels_page() -> None:
         def confirm_delete(lab: Label) -> None:
             with ui.dialog() as dlg, ui.card().classes("w-96"):
                 ui.label(f"Delete “{lab.name}”?").classes("text-lg")
-                ui.label("It isn't used by any transaction.").classes("text-sm et-muted")
+                ui.label("It isn't used by any transaction."
+                         + (" Labels in its group stay, ungrouped." if labels.with_children({lab.id}) - {lab.id}
+                            else "")).classes("text-sm et-muted")
 
                 def do_delete() -> None:
                     try:
@@ -281,6 +315,7 @@ def labels_page() -> None:
                         ui.notify(str(exc), type="warning")
                     dlg.close()
                     listing.refresh()
+                    group.set_options(_group_options(), value=NO_GROUP)
 
                 with ui.row().classes("w-full justify-end"):
                     ui.button("Cancel", on_click=dlg.close).props("flat")

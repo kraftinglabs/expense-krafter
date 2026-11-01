@@ -11,6 +11,7 @@ from sqlmodel import col, select
 from ..db import get_session
 from ..db.models import Account, Direction, ExpenseGroup, Label, Transaction, TxnKind
 from . import narration
+from .labels import with_children
 
 
 def accounts(active_only: bool = True) -> list[Account]:
@@ -92,7 +93,7 @@ def _where(q, f: TxnFilter):
     if f.kinds:
         q = q.where(col(Transaction.kind).in_([TxnKind(k) for k in f.kinds]))
     if f.label_ids:
-        ids = [i for i in f.label_ids if i != NO_LABEL]
+        ids = list(with_children({i for i in f.label_ids if i != NO_LABEL}))  # a group takes its labels
         cond = col(Transaction.label_id).in_(ids)
         if NO_LABEL in f.label_ids:
             cond = cond | (Transaction.label_id == None)  # noqa: E711
