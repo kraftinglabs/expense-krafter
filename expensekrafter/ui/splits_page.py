@@ -5,7 +5,7 @@ from __future__ import annotations
 
 from datetime import date
 
-from nicegui import ui
+from nicegui import app, ui
 
 from ..db.models import AccountType
 from ..services import ledger, payroll, splits
@@ -96,7 +96,32 @@ def splits_page() -> None:
                     ui.label("Paid for friends? Click New split, pick the expense and say who owes what."
                              if not everything else "Nothing here.").classes("et-muted")
                 return
-            with ui.column().classes("w-full gap-3"):
+            # Collapsible; the header keeps the money still to come in view when it's folded.
+            store = app.storage.user
+            key = f"splits_list_open_{state['show']}"
+            exp = ui.expansion(value=store.get(key, True),
+                               on_value_change=lambda e: store.update({key: e.value})) \
+                .classes("w-full et-month et-rise")
+            to_come = sum(sp.remaining_minor for sp in shown)
+            owing = sorted({p.person for sp in shown for p in sp.people if p.remaining_minor}, key=str.casefold)
+            waiting = sum(sp.expected for sp in shown)
+            with exp.add_slot("header"):
+                with ui.row().classes("w-full items-center gap-4 no-wrap"):
+                    with ui.column().classes("gap-0"):
+                        ui.label(f"{SHOW[state['show']]} splits").classes("et-display text-lg font-semibold")
+                        ui.label(f"{len(shown)} split{'s' if len(shown) != 1 else ''}"
+                                 + (f" · {waiting} waiting for a card statement" if waiting else "")) \
+                            .classes("text-xs et-faint")
+                    ui.space()
+                    if to_come:
+                        with ui.column().classes("gap-0 items-end"):
+                            ui.label(f"{_rupees(to_come)} to come").classes("et-num font-semibold et-warn")
+                            ui.label(f"from {', '.join(owing[:3])}" + (f" +{len(owing) - 3}" if len(owing) > 3
+                                                                        else "")) \
+                                .classes("text-xs et-faint truncate max-w-64")
+                    else:
+                        ui.label("✓ Nothing to come").classes("et-chip accent")
+            with exp, ui.column().classes("w-full gap-3 p-4 pt-0"):
                 for sp in shown:
                     split_card(sp)
 
