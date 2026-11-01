@@ -4,9 +4,10 @@ from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
-from nicegui import ui
+from nicegui import app, ui
 
 from ..config import save_settings, settings
+from ..services import inbox
 
 NAV = [
     ("Dashboard", "/", "space_dashboard"),
@@ -91,6 +92,27 @@ def _sidebar(active: str) -> None:
                         ui.label(data_dir).classes("et-faint text-[11px] truncate w-40").tooltip(data_dir)
 
 
+# Inbox files already shown once, so a file you leave there doesn't keep pulling
+# you back to the Import page.
+_announced: set[str] = set()
+
+
+def _check_inbox() -> None:
+    """Statements sent from Explorer: bring the window forward and open Import."""
+    new = {p.name for p in inbox.pending()} - _announced
+    if not new:
+        return
+    _announced.update(new)
+    if _current_path() == "/import":
+        return  # the Import page shows them itself
+    try:
+        if app.native.main_window:
+            app.native.main_window.restore()
+    except Exception:  # noqa: BLE001  (web mode, or a window that can't be restored)
+        pass
+    ui.navigate.to("/import")
+
+
 @contextmanager
 def frame(title: str, subtitle: str = ""):
     ui.dark_mode(is_dark())
@@ -100,6 +122,7 @@ def frame(title: str, subtitle: str = ""):
     ui.add_css(THEME_CSS)
 
     _sidebar(_current_path())
+    ui.timer(1.5, _check_inbox)
     with ui.column().classes("w-full max-w-[1500px] mx-auto px-8 py-7 gap-6"):
         with ui.row().classes("w-full items-end"):
             with ui.column().classes("gap-1"):

@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import subprocess
+import sys
 
 from nicegui import ui
 from sqlmodel import select
@@ -11,7 +13,7 @@ from ..config import save_settings, settings
 from ..db import get_session
 from ..db.models import Account, AccountType, IntervalUnit, Label
 from ..importers import parser_options
-from ..services import app_lock, labels, narration, vault
+from ..services import app_lock, inbox, labels, narration, vault
 from ..services.importer import reapply_rule_types
 from ..services.money import fmt
 from ..services.accounts import delete_account, mask_account_number, save_account, usage_count
@@ -417,6 +419,29 @@ def app_password_card() -> None:
                 ui.button("Remove password", icon="lock_open", on_click=remove).props("flat color=negative")
 
 
+@ui.refreshable
+def send_to_card() -> None:
+    with ui.card().classes("w-full max-w-3xl"):
+        ui.label("Send to menu").classes("font-medium")
+        ui.label("Right-click a downloaded statement in File Explorer → Send to → ExpenseKrafter, and it opens on "
+                 "the Import page (in the open window, if ExpenseKrafter is already running).")             .classes("text-sm et-muted")
+        installed = inbox.send_to_installed()
+
+        def toggle() -> None:
+            try:
+                inbox.remove_send_to() if installed else inbox.install_send_to()
+            except (OSError, subprocess.CalledProcessError) as exc:
+                ui.notify(f"Couldn't change the Send to menu: {exc}", type="negative")
+                return
+            ui.notify("Removed from Send to" if installed else "Added: Send to → ExpenseKrafter", type="positive")
+            send_to_card.refresh()
+
+        with ui.row().classes("items-center gap-3"):
+            ui.label("✓ In your Send to menu" if installed else "Not in your Send to menu")                 .classes("et-chip accent" if installed else "et-chip")
+            ui.button("Remove" if installed else "Add to Send to", icon="remove" if installed else "add",
+                      on_click=toggle).props("outline dense no-caps" if installed else "dense no-caps")
+
+
 @ui.page("/settings")
 def settings_page() -> None:
     with frame("Settings", "Where your data lives and when to remind you"):
@@ -430,6 +455,8 @@ def settings_page() -> None:
                            "padding='4px 16px'").classes("et-segment")
 
         app_password_card()
+        if sys.platform == "win32":
+            send_to_card()
 
         with ui.card().classes("w-full max-w-3xl"):
             ui.label("Data folder").classes("font-medium")

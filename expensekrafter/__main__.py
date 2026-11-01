@@ -3,6 +3,7 @@
     expensekrafter                      desktop window
     expensekrafter --web                web app: serves on http://localhost:8080 and opens your browser
     expensekrafter --web --host 0.0.0.0 reachable from other machines (needs EXPENSEKRAFTER_PASSWORD)
+    expensekrafter --import FILE...     open these statements on the Import page (Explorer's "Send to")
 
 Run with --help for all options.
 """
@@ -29,7 +30,7 @@ from .db import get_session, init_db
 from .db.models import IntervalUnit, Label
 from .db.session import acquire_lock, adopt_legacy_db, backup_db, release_lock
 from .services.notify import send_due_notifications
-from .services import app_lock
+from .services import app_lock, inbox
 from .ui import auth, layout
 
 DEFAULT_LABELS = [
@@ -86,6 +87,8 @@ def parse_args(argv: list[str]) -> argparse.Namespace:
                         help="remove the app password (if you've forgotten it), then exit")
     parser.add_argument("--browser", action="store_true", help=argparse.SUPPRESS)  # dev: --web --no-open
     parser.add_argument("--data-dir", help="use this data folder for this run only (dev/testing)")
+    parser.add_argument("--import", dest="import_files", nargs="+", metavar="FILE",
+                        help="statements to import; handed to the open app if it's already running")
     args = parser.parse_args(argv)
     if args.browser:
         args.web = args.no_open = True
@@ -98,6 +101,11 @@ def main() -> None:
         override_data_dir(args.data_dir)
     elif adopt_legacy_install():  # first run after the rename from ExpenseTracker
         reload_settings()
+    if args.import_files:
+        added = inbox.add(args.import_files)
+        if inbox.app_running(settings):  # the open window picks them up from the inbox
+            print(f"Sent {len(added)} file{'s' if len(added) != 1 else ''} to the open ExpenseKrafter.")
+            return
     if args.reset_password:
         backup_db(settings)
         init_db(settings)

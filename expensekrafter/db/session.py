@@ -62,7 +62,7 @@ def backup_db(cfg: Settings) -> Path | None:
     return dest
 
 
-def _lock_path(cfg: Settings) -> Path:
+def lock_path(cfg: Settings) -> Path:
     return cfg.data_path / "expensekrafter.lock"
 
 
@@ -70,7 +70,7 @@ def acquire_lock(cfg: Settings) -> str | None:
     """Take the lock. Returns a warning message if another machine appears to
     hold it (the lock is still taken: the user decides what to do)."""
     cfg.data_path.mkdir(parents=True, exist_ok=True)
-    path = _lock_path(cfg)
+    path = lock_path(cfg)
     me = socket.gethostname()
     warning = None
     if path.exists():
@@ -90,7 +90,7 @@ def acquire_lock(cfg: Settings) -> str | None:
 
 
 def release_lock(cfg: Settings) -> None:
-    path = _lock_path(cfg)
+    path = lock_path(cfg)
     try:
         info = json.loads(path.read_text(encoding="utf-8"))
         if info.get("host") == socket.gethostname() and info.get("pid") == os.getpid():

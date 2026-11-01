@@ -10,7 +10,7 @@ from nicegui import events, ui
 
 from ..db.models import AccountType, Direction, TxnKind
 from ..importers import PasswordRequired, parser_options
-from ..services import analytics, importer, ledger, narration, vault
+from ..services import analytics, importer, inbox, ledger, narration, vault
 from ..services.importer import ImportPreview, default_kind, commit_import, preview_import
 from ..services.money import fmt
 from . import icons
@@ -134,6 +134,31 @@ def import_page() -> None:
             ui.upload(label="Drop a statement (PDF, XLSX, XLS, CSV)", auto_upload=True,
                       on_upload=lambda e: handle_upload(e)).props("accept=.pdf,.xlsx,.xls,.csv").classes("w-full")
 
+        @ui.refreshable
+        def sent() -> None:
+            files = inbox.pending()
+            state["inbox_names"] = [f.name for f in files]
+            if not files:
+                return
+            with ui.card().classes("w-full gap-2 border-l-4 border-emerald-600"):
+                with ui.row().classes("items-center gap-2"):
+                    ui.icon("move_to_inbox").classes("et-pos text-xl")
+                    ui.label(f"Sent to ExpenseKrafter ({len(files)})").classes("font-medium")
+                ui.label("Pick the account and format above, then preview each file.").classes("text-xs et-muted")
+                for f in files:
+                    with ui.row().classes("w-full items-center gap-3 no-wrap"):
+                        ui.icon("description").classes("et-faint")
+                        ui.label(inbox.original_name(f)).classes("flex-1 truncate text-sm")
+                        ui.button("Preview", icon="visibility",
+                                  on_click=lambda f=f: preview_file(f, inbox.original_name(f), from_inbox=f)) \
+                            .props("outline dense no-caps")
+                        ui.button(icon="close", on_click=lambda f=f: (inbox.remove(f), sent.refresh())) \
+                            .props("flat round dense").tooltip("Remove from this list (the original file stays)")
+
+        sent()
+        ui.timer(2, lambda: sent.refresh() if [f.name for f in inbox.pending()] != state.get("inbox_names")
+                 else None)
+
         result = ui.column().classes("w-full")
         # Dialogs opened from the upload handler would otherwise be created
         # inside the uploader, which re-renders and drops them.
@@ -142,16 +167,22 @@ def import_page() -> None:
         async def handle_upload(e: events.UploadEventArguments) -> None:
             tmp = Path(tempfile.mkdtemp()) / e.file.name
             await e.file.save(tmp)
+            try:
+                await preview_file(tmp, e.file.name)
+            finally:
+                shutil.rmtree(tmp.parent, ignore_errors=True)
+
+        async def preview_file(path: Path, name: str, from_inbox: Path | None = None) -> None:
             acc_id = account.value
             password = vault.get_password(acc_id)
             from_vault = password is not None
             try:
                 while True:
                     try:
-                        state["preview"] = preview_import(acc_id, tmp, parser.value, e.file.name, password)
+                        state["preview"] = preview_import(acc_id, path, parser.value, name, password)
                         break
                     except PasswordRequired as exc:
-                        answer = await ask_password(e.file.name, wrong=exc.wrong_password, saved=from_vault)
+                        answer = await ask_password(name, wrong=exc.wrong_password, saved=from_vault)
                         if answer is None:
                             return
                         password, remember = answer
@@ -159,10 +190,9 @@ def import_page() -> None:
                         if remember:
                             state["remember"] = password
             except Exception as exc:  # parsers raise all sorts on malformed files
-                ui.notify(f"Couldn't read {e.file.name}: {exc}", type="negative", multi_line=True)
+                ui.notify(f"Couldn't read {name}: {exc}", type="negative", multi_line=True)
                 return
-            finally:
-                shutil.rmtree(tmp.parent, ignore_errors=True)
+            state["inbox_file"] = from_inbox
             if remember_pw := state.pop("remember", None):
                 if vault.set_password(acc_id, remember_pw):
                     ui.notify("Password saved for this account on this computer", type="info")
@@ -301,6 +331,9 @@ def import_page() -> None:
                       + (f", {batch.rows_duplicate} already imported" if batch.rows_duplicate else ""),
                       type="positive")
             result.clear()
+            if done := state.pop("inbox_file", None):
+                inbox.remove(done)
+                sent.refresh()
             overview.refresh()
 
         @ui.refreshable
