@@ -10,7 +10,7 @@ from itertools import groupby
 from nicegui import ui
 
 from ..db.models import Direction
-from ..services import ledger, narration
+from ..services import groups, ledger, narration
 from ..services.analytics import merchant_name
 from ..services.money import fmt
 from . import icons
@@ -72,8 +72,12 @@ def transactions_page() -> None:
                     .classes("et-muted")
                 ui.space()
                 selection_label = ui.label().classes("text-sm et-muted")
-                group_btn = ui.button("Group selected", icon="merge", on_click=lambda: group_dialog()).props("outline")
-                ungroup_btn = ui.button("Ungroup", icon="call_split", on_click=lambda: ungroup()).props("outline")
+                group_btn = ui.button("Add to group", icon="create_new_folder").props("outline")
+                with group_btn:
+                    group_menu = ui.menu()
+                group_btn.on("click", lambda: fill_group_menu())
+                ungroup_btn = ui.button("Remove from group", icon="folder_off", on_click=lambda: ungroup()) \
+                    .props("outline")
 
             with ui.card().classes("w-full gap-4") as panel:
                 with ui.row().classes("w-full items-end gap-4 flex-wrap"):
@@ -122,7 +126,7 @@ def transactions_page() -> None:
             n = len(state["selected"])
             selection_label.text = f"{n} selected" if n else ""
             # Only shown while rows are ticked, so the toolbar fits on one line.
-            group_btn.set_visibility(n >= 2)
+            group_btn.set_visibility(n >= 1)
             ungroup_btn.set_visibility(n >= 1)
 
         def toggle(txn_id: int, on: bool) -> None:
@@ -146,8 +150,8 @@ def transactions_page() -> None:
                     ui.html(f'<span class="et-chip">{icons.tile_html(acc, 14)}{escape(acc.name)}</span>',
                             sanitize=False)
                 if t.group_name:
-                    ui.html(f'<span class="et-chip accent">{escape(t.group_name)}</span>', sanitize=False) \
-                        .tooltip("Grouped expense")
+                    ui.link(t.group_name, "/groups").classes("et-chip accent no-underline") \
+                        .tooltip("In this expense group: open Expense groups")
                 if t.notes:
                     ui.label(f"“{t.notes}”").classes("text-xs et-muted italic et-break")
 
@@ -264,24 +268,49 @@ def transactions_page() -> None:
                     ui.button("Save", on_click=save)
             dlg.open()
 
-        async def group_dialog() -> None:
-            ids = list(state["selected"])
-            with ui.dialog() as dlg, ui.card():
-                ui.label(f"Group {len(ids)} transactions as one expense").classes("font-medium")
-                name = ui.input("Group name").classes("w-80").props("autofocus")
+        def fill_group_menu() -> None:
+            """Existing groups (newest first), then a new one."""
+            group_menu.clear()
+            with group_menu:
+                for gid, name in groups.options().items():
+                    ui.menu_item(name, on_click=lambda gid=gid, name=name: add_to(gid, name))
+                ui.separator()
+                ui.menu_item("New group…", on_click=lambda: new_group_dialog())
+
+        def add_to(group_id: int, name: str) -> None:
+            try:
+                n = groups.add_to_group(list(state["selected"]), group_id)
+            except groups.GroupError as exc:
+                ui.notify(str(exc), type="warning")
+                return
+            ui.notify(f"Added {n} to “{name}”" if n else f"Already in “{name}”", type="positive")
+            state["selected"].clear()
+            update_selection()
+            months.refresh()
+
+        async def new_group_dialog() -> None:
+            with ui.dialog() as dlg, ui.card().classes("w-96"):
+                ui.label(f"New group for {len(state['selected'])} transaction"
+                         f"{'s' if len(state['selected']) != 1 else ''}").classes("font-medium")
+                name = ui.input("Group name", placeholder="e.g. Vietnam trip, Nov 2026").classes("w-full") \
+                    .props("autofocus")
+                name.on("keydown.enter", lambda: dlg.submit(name.value))
                 with ui.row().classes("w-full justify-end"):
                     ui.button("Cancel", on_click=dlg.close).props("flat")
-                    ui.button("Group", on_click=lambda: dlg.submit(name.value))
-            if group_name := await dlg:
-                ledger.group_transactions(ids, group_name)
-                state["selected"].clear()
-                update_selection()
-                months.refresh()
+                    ui.button("Create", on_click=lambda: dlg.submit(name.value))
+            if (group_name := await dlg) is None:
+                return
+            try:
+                gid = groups.create_group(group_name)
+            except groups.GroupError as exc:
+                ui.notify(str(exc), type="warning")
+                return
+            add_to(gid, " ".join(group_name.split()))
 
         def ungroup() -> None:
             try:
-                ledger.ungroup_transactions(list(state["selected"]))
-            except ValueError as exc:  # a group with a split on it
+                groups.remove_from_group(list(state["selected"]))
+            except groups.GroupError as exc:  # a group with a split on it
                 ui.notify(str(exc), type="warning")
                 return
             state["selected"].clear()

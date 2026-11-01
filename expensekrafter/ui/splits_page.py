@@ -47,7 +47,8 @@ def _credit_option(c: splits.Credit) -> str:
 
 
 @ui.page("/splits")
-def splits_page() -> None:
+def splits_page(new: str = "") -> None:
+    """`new`: open New split for this expense, e.g. "g:3" (a group)."""
     with frame("Splits & reimbursements", "Money friends or your company owe you back, what's come in, and "
                                           "reimbursements in your salary"):
         state = {"show": "open"}
@@ -133,7 +134,8 @@ def splits_page() -> None:
                 with ui.row().classes("w-full items-start no-wrap gap-4"):
                     with ui.column().classes("gap-0 flex-1 min-w-0"):
                         ui.label(sp.name).classes("font-semibold truncate w-full")
-                        details = ([f"{sp.members} transactions from {sp.txn_date:%d %b %Y}"] if sp.group_id
+                        details = ([f"{sp.members} transaction{'s' if sp.members != 1 else ''} from "
+                                    f"{sp.txn_date:%d %b %Y}"] if sp.group_id
                                    else [f"{sp.txn_date:%d %b %Y}"]) + [sp.account] + ([sp.label] if sp.label else [])
                         ui.label(" · ".join(details)).classes("text-xs et-faint")
                     with ui.column().classes("gap-0 items-end"):
@@ -208,7 +210,7 @@ def splits_page() -> None:
                               and dlg.close()).props("color=negative")
             dlg.open()
 
-        def split_dialog(sp: splits.Split | None) -> None:
+        def split_dialog(sp: splits.Split | None, preselect: str | None = None) -> None:
             known = splits.people()
             rows: list[dict] = []
             with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[40rem] max-w-full gap-3"):
@@ -221,7 +223,8 @@ def splits_page() -> None:
                     candidates = splits.expense_candidates(limit=400)
                     groups = splits.group_candidates()
                     # Groups first (e.g. a whole trip), then single transactions.
-                    options = {f"g:{g.group_id}": f"Group · {g.name} · {g.count} transactions from "
+                    options = {f"g:{g.group_id}": f"Group · {g.name} · {g.count} transaction"
+                                                  f"{'s' if g.count != 1 else ''} from "
                                                   f"{g.first_date:%d %b %Y} · {fmt(g.amount_minor)}" for g in groups}
                     options |= {f"t:{t.id}": _expense_option(t, acc) for t, acc in candidates}
                     amounts = {f"g:{g.group_id}": g.amount_minor for g in groups}
@@ -237,7 +240,8 @@ def splits_page() -> None:
                                                                  refresh_share())) \
                             .props("outlined dense options-dense").classes("w-full")
                         ui.label("Type to search by name, account or amount. Several transactions for one "
-                                 "thing (a trip)? Group them on Transactions first.").classes("text-xs et-faint -mt-1")
+                                 "thing (a trip)? Put them in an expense group first.") \
+                            .classes("text-xs et-faint -mt-1")
                     with ui.column().classes("w-full gap-2") as pending_box:
                         ui.label("Record it now; it's matched to the card transaction when you import that "
                                  "statement.").classes("text-xs et-muted")
@@ -315,6 +319,11 @@ def splits_page() -> None:
                     add_row(p.person, p.owed_minor / 100)
                 if not rows:
                     add_row()
+                if not sp and preselect in options:  # opened from Expense groups
+                    expense.set_value(preselect)
+                elif not sp and preselect:
+                    ui.notify("That group can't be split: it has nothing paid out once its money in is taken off, "
+                              "or it already has a split.", type="warning", multi_line=True)
 
                 def save() -> None:
                     shares = {r["name"].value or "": to_minor(r["amount"].value or 0) for r in rows}
@@ -554,4 +563,6 @@ def splits_page() -> None:
         # Dialogs are created here, not inside the card menu that opens them (a
         # closing menu would take its dialog with it).
         dialog_host = ui.element("div")
+        if new:
+            split_dialog(None, new)
 

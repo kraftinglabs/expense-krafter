@@ -202,8 +202,8 @@ def group_transactions(txn_ids: list[int], name: str) -> ExpenseGroup:
 
 
 def ungroup_transactions(txn_ids: list[int]) -> None:
-    """Take transactions out of their groups. A group with a split or
-    repayment on it can't be emptied: delete that split first."""
+    """Take transactions out of their groups (the groups stay). A group with a
+    split or repayment on it can't be emptied: delete that split first."""
     with get_session() as s:
         txns = list(s.exec(select(Transaction).where(col(Transaction.id).in_(txn_ids))))
         group_ids = {t.group_id for t in txns if t.group_id}
@@ -219,11 +219,6 @@ def ungroup_transactions(txn_ids: list[int]) -> None:
         for t in txns:
             t.group_id = None
             s.add(t)
-        s.flush()
-        # Drop groups that are now empty.
-        for gid in group_ids:
-            if not s.exec(select(Transaction).where(Transaction.group_id == gid)).first():
-                s.delete(s.get(ExpenseGroup, gid))
-        s.commit()
+        s.commit()  # the groups stay, even empty: delete them on the Expense groups page
 
 

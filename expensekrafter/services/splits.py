@@ -70,7 +70,7 @@ class Split:
     expected: bool = False  # pending: the card statement with it isn't imported yet
     account_id: int | None = None
     group_id: int | None = None  # a split over an expense group
-    members: int = 0  # transactions in that group
+    members: int = 0  # transactions in that group (including ones still to come)
 
     @property
     def name(self) -> str:
@@ -148,11 +148,15 @@ def _on(model, txn_id: int | None, group_id: int | None):
     return model.expense_txn_id == txn_id
 
 
-def group_members(s, group_ids) -> dict[int, list[Transaction]]:
+def group_members(s, group_ids, expected: bool = True) -> dict[int, list[Transaction]]:
+    """Transactions in each group; with expected, also card expenses still
+    waiting for their statement."""
     out: dict[int, list[Transaction]] = defaultdict(list)
     if group_ids:
-        for t in s.exec(select(Transaction).where(col(Transaction.group_id).in_(set(group_ids)),
-                                                  Transaction.expected == False)):  # noqa: E712
+        q = select(Transaction).where(col(Transaction.group_id).in_(set(group_ids)))
+        if not expected:
+            q = q.where(Transaction.expected == False)  # noqa: E712
+        for t in s.exec(q.order_by(Transaction.txn_date, Transaction.id)):
             out[t.group_id].append(t)
     return out
 
@@ -215,26 +219,31 @@ PENDING_OVERDUE_DAYS = 45
 
 
 def create_pending(account_id: int, txn_date: date, amount_minor: int, description: str,
-                   shares: dict[str, int], label_id: int | None = None) -> int:
-    """Record a split for a card expense that isn't imported yet. Returns the
+                   shares: dict[str, int], label_id: int | None = None, group_id: int | None = None) -> int:
+    """Record a card expense that isn't imported yet: with shares, a pending
+    split; in a group, an expected item of it (shares optional). Returns the
     placeholder's id (use it like any split's txn_id)."""
     description = " ".join((description or "").split())
     if not description:
         raise SplitError("Say what it was for, so you can recognise it later.")
     if amount_minor <= 0:
         raise SplitError("Enter what you paid.")
-    _clean_shares(amount_minor, shares)
+    if shares or group_id is None:
+        _clean_shares(amount_minor, shares)
     with get_session() as s:
         if s.get(Account, account_id) is None:
             raise SplitError("Pick the card or account you paid with.")
+        if group_id is not None and s.get(ExpenseGroup, group_id) is None:
+            raise SplitError("That group no longer exists.")
         txn = Transaction(account_id=account_id, txn_date=txn_date, description=description,
                           amount_minor=amount_minor, direction=Direction.debit, kind=TxnKind.expense,
                           kind_manual=True, label_id=label_id, fingerprint=f"expected:{uuid.uuid4().hex}",
-                          expected=True)
+                          expected=True, group_id=group_id)
         s.add(txn)
         s.commit()
         txn_id = txn.id
-    save_split(txn_id, shares)
+    if shares:
+        save_split(txn_id, shares)
     return txn_id
 
 
@@ -276,11 +285,25 @@ def attach_candidates(pending_id: int, txn_ids: set[int] | None = None, nearby_o
                                        abs((r[0].txn_date - pending.txn_date).days), -r[0].txn_date.toordinal()))
 
 
+def pending_items() -> list[Split]:
+    """Every card expense waiting for its statement: pending splits and
+    expected items of groups (a Split with no people)."""
+    by_id = {sp.txn_id: sp for sp in splits() if sp.expected}
+    with get_session() as s:
+        rows = s.exec(select(Transaction, Account.name, Label.name)
+                      .join(Account, Account.id == Transaction.account_id)
+                      .join(Label, Label.id == Transaction.label_id, isouter=True)
+                      .where(Transaction.expected == True)  # noqa: E712
+                      .order_by(col(Transaction.txn_date).desc())).all()
+    return [by_id.get(t.id) or Split(t.id, t.txn_date, t.description, acc, lab or "", t.amount_minor,
+                                     expected=True, account_id=t.account_id) for t, acc, lab in rows]
+
+
 def pending_matches(txn_ids: set[int]) -> list[tuple[Split, list[tuple[Transaction, str]]]]:
-    """For a fresh import: pending splits that look like one of these new rows."""
+    """For a fresh import: waiting card expenses that look like one of these new rows."""
     out = []
-    for sp in splits():
-        if sp.expected and (found := attach_candidates(sp.txn_id, txn_ids)):
+    for sp in pending_items():
+        if found := attach_candidates(sp.txn_id, txn_ids):
             out.append((sp, found))
     return out
 
@@ -309,6 +332,8 @@ def attach_pending(pending_id: int, txn_id: int) -> None:
             txn.label_id = pending.label_id
         if not txn.notes:
             txn.notes = pending.description
+        if txn.group_id is None:
+            txn.group_id = pending.group_id  # an expected item of a group joins it for real
         s.add(txn)
         s.flush()
         s.delete(pending)
