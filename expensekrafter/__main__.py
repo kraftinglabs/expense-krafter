@@ -30,7 +30,7 @@ from .db import get_session, init_db
 from .db.models import IntervalUnit, Label
 from .db.session import acquire_lock, adopt_legacy_db, backup_db, release_lock
 from .services.notify import send_due_notifications
-from .services import app_lock, inbox
+from .services import app_lock, inbox, share_target
 from .ui import auth, layout
 
 DEFAULT_LABELS = [
@@ -101,11 +101,13 @@ def main() -> None:
         override_data_dir(args.data_dir)
     elif adopt_legacy_install():  # first run after the rename from ExpenseTracker
         reload_settings()
+    # Files from Explorer's "Send to" (--import) or the Windows Share sheet.
+    shared = share_target.take_shared_files()
     if args.import_files:
-        added = inbox.add(args.import_files)
-        if inbox.app_running(settings):  # the open window picks them up from the inbox
-            print(f"Sent {len(added)} file{'s' if len(added) != 1 else ''} to the open ExpenseKrafter.")
-            return
+        shared = (shared or []) + inbox.add(args.import_files)
+    if shared is not None and inbox.app_running(settings):  # the open window picks them up from the inbox
+        print(f"Sent {len(shared)} file{'s' if len(shared) != 1 else ''} to the open ExpenseKrafter.")
+        return
     if args.reset_password:
         backup_db(settings)
         init_db(settings)

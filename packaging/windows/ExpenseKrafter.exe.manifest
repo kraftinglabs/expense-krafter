@@ -1,0 +1,10 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!-- Ties ExpenseKrafter.exe to the sparse package in AppxManifest.xml, so a
+     launch through the package (e.g. from the Share sheet) runs with its
+     identity. Without the package registered the exe runs as usual. -->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <msix xmlns="urn:schemas-microsoft-com:msix.v1"
+        publisher="CN=ExpenseKrafter Local Signing"
+        packageName="Kraftinglabs.ExpenseKrafter"
+        applicationId="ExpenseKrafter" />
+</assembly>

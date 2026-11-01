@@ -14,6 +14,9 @@ Linux:
 
     --skip-tests   build even if the tests fail
 
+Windows: also builds the Share sheet package (dist/ExpenseKrafter-share.msix)
+once its signing certificate exists; see packaging/windows/share_target.py.
+
 Runs the tests first, then packages the app with everything it needs (NiceGUI's
 web assets, the theme, icons and description rules). Your data is not
 included: the built app uses the same data folder as `python -m expensekrafter`.
@@ -58,7 +61,15 @@ def _platform_args() -> list[str]:
     """What PyInstaller can't find on its own (loaded through entry points or
     picked at runtime), per OS."""
     if WINDOWS:
+        # The manifest ties the exe to the Share sheet package (packaging/windows);
+        # the winrt modules read a share when Windows starts the app with one.
+        winrt = ["winrt.windows.applicationmodel", "winrt.windows.applicationmodel.activation",
+                 "winrt.windows.applicationmodel.datatransfer",
+                 "winrt.windows.applicationmodel.datatransfer.sharetarget", "winrt.windows.storage",
+                 "winrt.windows.foundation", "winrt.windows.foundation.collections"]
         return ["--hidden-import", "keyring.backends.Windows",
+                *[a for m in winrt for a in ("--hidden-import", m)],
+                "--manifest", str(PACKAGING / "windows" / "ExpenseKrafter.exe.manifest"),
                 "--icon", str(PACKAGING / "icon.ico")]
     if LINUX:
         # Saved passwords go to the Secret Service (GNOME Keyring / KWallet);
@@ -114,6 +125,21 @@ def linux_package(app: Path) -> Path:
     return archive
 
 
+def share_package(app: Path) -> None:
+    """Build and sign the Share sheet package, if the signing certificate has
+    been made (packaging/windows/share_target.py cert), and put its logos in
+    the app folder. Register it after installing: share_target.py register
+    <install folder>."""
+    sys.path.insert(0, str(PACKAGING / "windows"))
+    import share_target
+
+    try:
+        if share_target.thumbprint() and app.is_dir():
+            print(f"Share sheet package: {share_target.pack(app)}")
+    except RuntimeError as exc:
+        print(f"Share sheet package skipped: {exc}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("--onefile", action="store_true", help="a single executable instead of a folder")
@@ -125,6 +151,8 @@ def main() -> None:
     shutil.rmtree(ROOT / "build", ignore_errors=True)
     out = build(opts.onefile)
     print(f"\nBuilt: {out}")
+    if WINDOWS:
+        share_package(out)
     if LINUX:
         print(f"Packed: {linux_package(out)}")
 

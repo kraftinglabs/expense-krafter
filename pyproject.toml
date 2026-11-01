@@ -22,6 +22,11 @@ desktop = [
     # Linux: the window uses Qt (installs from pip, bundles cleanly).
     "pywebview[qt]>=5; sys_platform == 'linux'",
     "desktop-notifier>=6.0",
+    # Windows: receiving files from the Share sheet.
+    "winrt-Windows.ApplicationModel.Activation>=3; sys_platform == 'win32'",
+    "winrt-Windows.ApplicationModel.DataTransfer.ShareTarget>=3; sys_platform == 'win32'",
+    "winrt-Windows.ApplicationModel.DataTransfer>=3; sys_platform == 'win32'",
+    "winrt-Windows.Storage>=3; sys_platform == 'win32'",
 ]
 dev = ["pytest>=8", "pypdf>=5"]
 build = ["pyinstaller>=6.10", "expensekrafter[desktop]"]
