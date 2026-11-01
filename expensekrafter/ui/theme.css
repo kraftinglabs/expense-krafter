@@ -298,3 +298,9 @@ html, body {
 
 /* Spend over time: bars open their transactions on click. */
 .et-click-bars .nsewdrag { cursor: pointer !important; }
+
+/* Labels page: drag a label onto another to group it. */
+.et-draggable { cursor: grab; }
+.et-draggable:active { cursor: grabbing; }
+.et-drop-zone { border: 1px dashed var(--border); border-radius: 10px; transition: background .12s; }
+.et-drop-over { background: var(--surface-3); box-shadow: inset 0 0 0 2px #007d56; border-radius: 10px; }

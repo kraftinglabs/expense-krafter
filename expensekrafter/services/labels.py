@@ -141,6 +141,18 @@ def update_label(label_id: int, *, name: str, color: str, recurring: bool,
         return label
 
 
+def set_parent(label_id: int, parent_id: int | None) -> Label:
+    """Move a label into a group (or out of one, with None)."""
+    parent_id = _check_parent(parent_id, label_id)
+    with get_session() as s:
+        label = s.get(Label, label_id)
+        label.parent_id = parent_id
+        s.add(label)
+        s.commit()
+        s.refresh(label)
+        return label
+
+
 def delete_label(label_id: int) -> None:
     if (n := usage_count(label_id)):
         raise ValueError(f"Label is used by {n} transaction{'s' if n != 1 else ''}; it can't be deleted")

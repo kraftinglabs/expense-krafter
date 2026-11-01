@@ -57,3 +57,11 @@ def test_deleting_a_group_ungroups_its_labels(ids):
     labels.delete_label(invest)
     with get_session() as s:
         assert s.get(Label, sip).parent_id is None
+
+
+def test_set_parent_moves_a_label_in_and_out(ids):
+    invest, sip, lump, food = ids
+    assert labels.set_parent(food, invest).parent_id == invest
+    assert labels.set_parent(food, None).parent_id is None
+    with pytest.raises(ValueError):  # a group can't be dragged into another group
+        labels.set_parent(invest, food)

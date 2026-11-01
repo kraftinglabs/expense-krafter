@@ -200,7 +200,7 @@ def labels_page() -> None:
             ui.label("A colour is picked for you; change it any time with Edit.").classes("text-xs et-faint")
             with ui.row().classes("items-end gap-3 mt-2"):
                 name = ui.input("Name").classes("w-56").props("outlined dense")
-                group = ui.select(_group_options(), value=NO_GROUP, label="Group under") \
+                group = group_select = ui.select(_group_options(), value=NO_GROUP, label="Group under") \
                     .props("outlined dense options-dense").classes("w-48")
                 recurring = ui.checkbox("Recurring")
                 interval = interval_picker()
@@ -232,11 +232,21 @@ def labels_page() -> None:
             if not rows:
                 ui.label("No labels yet.").classes("et-muted")
                 return
+            ui.label("Drag a label onto another to put it in that group; drop it on the box below to take it "
+                     "out.").classes("text-xs et-faint -mb-3")
+            with drop_target(ui.row(), None).classes("et-drop-zone w-full items-center justify-center gap-2 py-3"):
+                ui.icon("move_up").classes("et-faint")
+                ui.label("Drop here to take a label out of its group").classes("text-sm et-faint")
             with ui.element("div").classes("et-card w-full"):
                 for i, lab in enumerate(rows):
                     used = labels.usage_count(lab.id)
-                    with ui.row().classes("w-full items-center gap-4 no-wrap px-5 py-3") \
-                            .style("" if i == 0 else "border-top: var(--hair) solid var(--border)"):
+                    row = ui.row().classes("w-full items-center gap-4 no-wrap px-5 py-3 et-draggable") \
+                        .style("" if i == 0 else "border-top: var(--hair) solid var(--border)") \
+                        .props("draggable=true")
+                    row.on("dragstart", lambda lab=lab: dragging.update(id=lab.id), [],
+                           js_handler='(e) => { e.dataTransfer.effectAllowed = "move"; emit(); }')
+                    with drop_target(row, lab):
+                        ui.icon("drag_indicator").classes("et-faint flex-none cursor-grab")
                         if lab.parent_id:
                             ui.icon("subdirectory_arrow_right").classes("et-faint flex-none ml-2")
                         ui.html(f'<span class="et-dot" style="width:12px;height:12px;background:{lab.color}"></span>',
@@ -260,6 +270,40 @@ def labels_page() -> None:
                                 wrap.tooltip(f"In use by {used} transaction{'s' if used != 1 else ''}; can't delete")
                             else:
                                 delete.tooltip("Delete")
+
+        dragging: dict = {"id": None}
+
+        def drop_target(el, onto: Label | None):
+            """Make `el` accept a dragged label: into `onto`'s group (or `onto`
+            itself when it's top-level), or out of its group with None."""
+            el.on("dragover", js_handler='(e) => { e.preventDefault(); e.currentTarget.classList.add("et-drop-over"); }')
+            el.on("dragleave", js_handler='(e) => { if (!e.currentTarget.contains(e.relatedTarget)) '
+                                          'e.currentTarget.classList.remove("et-drop-over"); }')
+            el.on("drop", lambda: dropped(onto), [],
+                  js_handler='(e) => { e.preventDefault(); e.currentTarget.classList.remove("et-drop-over"); emit(); }')
+            return el
+
+        def dropped(onto: Label | None) -> None:
+            moved, dragging["id"] = dragging["id"], None
+            if moved is None:
+                return
+            group = None if onto is None else (onto.parent_id or onto.id)
+            if group == moved:
+                return  # dropped on itself or on a label of its own group
+            with get_session() as s:
+                lab = s.get(Label, moved)
+                target = s.get(Label, group) if group else None
+            if lab is None or lab.parent_id == group:
+                return
+            try:
+                labels.set_parent(moved, group)
+            except ValueError as exc:
+                ui.notify(str(exc), type="warning")
+                return
+            ui.notify(f"“{lab.name}” is now in {target.name}" if target else f"“{lab.name}” is out of its group",
+                      type="positive")
+            listing.refresh()
+            group_select.set_options(_group_options(), value=NO_GROUP)
 
         def edit_dialog(lab: Label) -> None:
             with ui.dialog() as dlg, ui.card().classes("w-[26rem]"):
