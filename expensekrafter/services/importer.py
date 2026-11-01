@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from datetime import date
 from pathlib import Path
 
+from sqlalchemy import func
 from sqlmodel import select
 
 from ..db import get_session
@@ -184,3 +185,43 @@ def commit_import(preview: ImportPreview, selected: set[str] | None = None) -> I
         s.commit()
         s.refresh(batch)
         return batch
+
+
+@dataclass
+class HistoryRow:
+    batch: ImportBatch
+    account: str
+
+
+def import_history() -> list[HistoryRow]:
+    """Every import, newest first."""
+    with get_session() as s:
+        rows = s.exec(select(ImportBatch, Account.name).join(Account, Account.id == ImportBatch.account_id)
+                      .order_by(ImportBatch.imported_at.desc(), ImportBatch.id.desc())).all()
+    return [HistoryRow(b, acc) for b, acc in rows]
+
+
+@dataclass
+class AccountStatus:
+    """Where an account's imported data stops: its latest transaction and import."""
+    account: Account
+    txn_count: int
+    last_txn: Transaction | None
+    last_import: ImportBatch | None
+
+
+def account_statuses() -> list[AccountStatus]:
+    """One per active account, in the usual account order."""
+    with get_session() as s:
+        accounts = s.exec(select(Account).where(Account.active == True)  # noqa: E712
+                          .order_by(Account.type, Account.name)).all()
+        counts = dict(s.exec(select(Transaction.account_id, func.count())
+                             .group_by(Transaction.account_id)).all())
+        out = []
+        for acc in accounts:
+            last_txn = s.exec(select(Transaction).where(Transaction.account_id == acc.id)
+                              .order_by(Transaction.txn_date.desc(), Transaction.id.desc())).first()
+            last_import = s.exec(select(ImportBatch).where(ImportBatch.account_id == acc.id)
+                                 .order_by(ImportBatch.imported_at.desc(), ImportBatch.id.desc())).first()
+            out.append(AccountStatus(acc, counts.get(acc.id, 0), last_txn, last_import))
+    return out

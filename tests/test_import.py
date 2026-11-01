@@ -139,3 +139,22 @@ def test_reimporting_a_card_statement_does_not_duplicate_the_bill(tmp_path, acco
         commit_import(p)
     with get_session() as s:
         assert len(s.exec(select(CCStatement)).all()) == 1
+
+
+def test_import_history_and_where_each_account_is_up_to(tmp_path, account_id):
+    from expensekrafter.services import importer
+
+    with get_session() as s:
+        s.add(Account(name="Empty Card", type=AccountType.credit_card))
+        s.commit()
+    f = tmp_path / "feb.xlsx"
+    _write_export(f, [["01/02/2026", "UPI-SWIGGY", "250.00", None, "9,750.00"],
+                      ["03/02/2026", "UPI-ZOMATO", "100.00", None, "9,650.00"]])
+    commit_import(preview_import(account_id, f, "generic_excel"))
+
+    [h] = importer.import_history()
+    assert (h.account, h.batch.filename, h.batch.rows_new) == ("Test Bank", "feb.xlsx", 2)
+    by_name = {st.account.name: st for st in importer.account_statuses()}
+    bank = by_name["Test Bank"]
+    assert (bank.txn_count, bank.last_txn.description, bank.last_import.id) == (2, "UPI-ZOMATO", h.batch.id)
+    assert by_name["Empty Card"].last_txn is None and by_name["Empty Card"].txn_count == 0

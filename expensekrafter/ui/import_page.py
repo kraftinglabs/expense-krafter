@@ -3,17 +3,115 @@ from __future__ import annotations
 import re
 import shutil
 import tempfile
+from datetime import date, timezone
 from pathlib import Path
 
 from nicegui import events, ui
 
-from ..db.models import TxnKind
+from ..db.models import AccountType, Direction, TxnKind
 from ..importers import PasswordRequired, parser_options
-from ..services import ledger, narration, vault
+from ..services import analytics, importer, ledger, narration, vault
 from ..services.importer import ImportPreview, default_kind, commit_import, preview_import
 from ..services.money import fmt
+from . import icons
 from .layout import frame
 from .transactions import KIND_LABELS
+
+# A bank statement older than this probably means a month hasn't been imported.
+STALE_DAYS = 35
+
+
+def _ago(d: date) -> str:
+    days = (date.today() - d).days
+    if days <= 0:
+        return "today"
+    if days == 1:
+        return "yesterday"
+    if days < 60:
+        return f"{days} days ago"
+    return f"{days // 30} months ago"
+
+
+def account_statuses() -> None:
+    """One card per account: its latest transaction and when it was last imported."""
+    statuses = importer.account_statuses()
+    ui.label("Where each account is up to").classes("et-card-title")
+    with ui.element("div").classes("grid grid-cols-1 md:grid-cols-2 2xl:grid-cols-3 gap-4 w-full"):
+        for st in statuses:
+            t = st.last_txn
+            stale = t is not None and (date.today() - t.txn_date).days > STALE_DAYS
+            with ui.card().classes("et-card-hover gap-2"):
+                with ui.row().classes("w-full items-center gap-3 no-wrap"):
+                    ui.html(icons.tile_html(st.account, 32), sanitize=False).classes("flex-none")
+                    with ui.column().classes("gap-0 min-w-0 flex-1"):
+                        ui.label(st.account.name).classes("font-semibold truncate w-full")
+                        ui.label(f"{st.txn_count:,} transaction{'s' if st.txn_count != 1 else ''}") \
+                            .classes("text-xs et-faint")
+                    if t is None:
+                        ui.label("No data yet").classes("et-chip warn flex-none")
+                    elif stale:
+                        ui.label("Due for an import").classes("et-chip warn flex-none") \
+                            .tooltip(f"Nothing newer than {STALE_DAYS} days")
+                    else:
+                        ui.label("Up to date").classes("et-chip accent flex-none")
+                if t is None:
+                    ui.label("Import a statement to see it here.").classes("text-sm et-muted")
+                    continue
+                with ui.row().classes("w-full items-baseline gap-2 no-wrap"):
+                    ui.label(f"{t.txn_date:%d %b %Y}").classes("text-sm font-medium flex-none")
+                    ui.label(f"· {_ago(t.txn_date)}").classes("text-xs " + ("et-warn" if stale else "et-faint"))
+                with ui.row().classes("w-full items-center gap-2 no-wrap"):
+                    ui.label(analytics.merchant_name(t.description)).classes("text-sm et-muted flex-1 truncate") \
+                        .tooltip(re.sub(r"\s+", " ", t.description))
+                    sign = "−" if t.direction == Direction.debit else "+"
+                    ui.label(f"{sign}{fmt(t.amount_minor)}").classes(
+                        "et-num text-sm font-medium flex-none " + ("" if t.direction == Direction.debit else "et-pos"))
+                if t.balance_minor is not None and st.account.type != AccountType.credit_card:
+                    ui.label(f"Balance after it: {fmt(t.balance_minor)}").classes("text-xs et-faint et-num")
+                if (b := st.last_import) is not None:
+                    when = b.imported_at.replace(tzinfo=timezone.utc).astimezone()
+                    ui.label(f"Last import {when:%d %b %Y}: {b.filename}").classes("text-xs et-faint truncate w-full") \
+                        .tooltip(b.filename)
+
+
+def import_history() -> None:
+    """Every statement imported so far, newest first."""
+    rows = importer.import_history()
+    formats = parser_options()
+    with ui.row().classes("w-full items-baseline gap-2"):
+        ui.label("Previous imports").classes("et-card-title")
+        ui.label(f"{len(rows)} file{'s' if len(rows) != 1 else ''}").classes("text-xs et-faint")
+    if not rows:
+        ui.label("Nothing imported yet.").classes("et-muted text-sm")
+        return
+    table = ui.table(
+        columns=[
+            {"name": "when", "label": "Imported", "field": "when", "align": "left", "sortable": True},
+            {"name": "account", "label": "Account", "field": "account", "align": "left", "sortable": True},
+            {"name": "file", "label": "File", "field": "file", "align": "left"},
+            {"name": "period", "label": "Covers", "field": "period", "align": "left"},
+            {"name": "new", "label": "Added", "field": "new", "align": "right", "sortable": True},
+            {"name": "dup", "label": "Already there", "field": "dup", "align": "right", "sortable": True},
+            {"name": "total", "label": "Rows", "field": "total", "align": "right", "sortable": True},
+            {"name": "format", "label": "Format", "field": "format", "align": "left"},
+        ],
+        rows=[{
+            "id": r.batch.id,
+            "when": f"{r.batch.imported_at.replace(tzinfo=timezone.utc).astimezone():%Y-%m-%d %H:%M}",
+            "account": r.account, "file": r.batch.filename,
+            "period": (f"{r.batch.period_start:%d %b %Y} – {r.batch.period_end:%d %b %Y}"
+                       if r.batch.period_start and r.batch.period_end else "—"),
+            "new": r.batch.rows_new, "dup": r.batch.rows_duplicate, "total": r.batch.rows_total,
+            "format": formats.get(r.batch.parser_key, r.batch.parser_key),
+        } for r in rows],
+        row_key="id", pagination={"rowsPerPage": 15, "sortBy": "when", "descending": True},
+    ).props("flat dense").classes("w-full")
+    table.add_slot("body-cell-file", r'''
+        <q-td :props="props"><div class="truncate max-w-64" :title="props.value">{{ props.value }}</div></q-td>''')
+    table.add_slot("body-cell-format", r'''
+        <q-td :props="props"><div class="truncate max-w-36 et-faint" :title="props.value">{{ props.value }}</div></q-td>''')
+    table.add_slot("body-cell-new", r'''
+        <q-td :props="props" :class="props.value ? '' : 'et-faint'">{{ props.value }}</q-td>''')
 
 
 @ui.page("/import")
@@ -203,6 +301,16 @@ def import_page() -> None:
                       + (f", {batch.rows_duplicate} already imported" if batch.rows_duplicate else ""),
                       type="positive")
             result.clear()
+            overview.refresh()
+
+        @ui.refreshable
+        def overview() -> None:
+            with ui.column().classes("w-full gap-3"):
+                account_statuses()
+            with ui.card().classes("w-full gap-3"):
+                import_history()
+
+        overview()
 
         ui.label("Tip: the generic parsers handle most Excel exports. Share a sample PDF per bank/card "
                  "to get a dedicated parser. Password-protected files will ask for the password.") \
