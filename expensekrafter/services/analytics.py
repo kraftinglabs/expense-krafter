@@ -5,8 +5,10 @@
   - reimbursements (friends paying you back): taken off the expense they are
     linked to, or off the month they arrived in when not linked (yet)
   - merchant refunds (credits marked kind=refund)
+  - reimbursements paid inside your salary (entered by hand), off their label
 "Income" = credits marked kind=income (salary, interest...), kept separate so
-income vs spend and the savings rate can be shown.
+income vs spend and the savings rate can be shown. Reimbursements paid inside
+the salary are taken off income too: they pay back spending, they aren't earnings.
 Card bill payments and transfers between your own accounts are neither, so
 nothing is counted twice.
 """
@@ -21,11 +23,12 @@ import pandas as pd
 from sqlmodel import select
 
 from ..db import get_session
-from ..db.models import Account, Direction, Label, ReimbursementLink, Transaction, TxnKind
+from ..db.models import Account, Direction, Label, PayrollReimbursement, ReimbursementLink, Transaction, TxnKind
 from . import labels, narration
 
 UNLABELLED = "Unlabelled"
 UNLABELLED_COLOR = "#a9aeab"
+PAID_IN_SALARY = "Reimbursed in salary"
 COLUMNS = ["id", "date", "account", "label", "color", "merchant", "description", "amount"]
 
 _NOISE = re.compile(
@@ -138,15 +141,32 @@ def spend_frame(period: Period | None = None, account_id: int | None = None) -> 
         else:
             amount = t.amount_minor - off_expense.get(t.id, 0)
         records.append(_record(t, acc, lab, color, amount))
+    records += _payroll_records(period, account_id)
     return pd.DataFrame(records, columns=COLUMNS)
+
+
+def _payroll_records(period: Period | None, account_id: int | None) -> list[dict]:
+    """Reimbursements paid inside the salary, as negative rows on the day they were paid."""
+    with get_session() as s:
+        q = (select(PayrollReimbursement, Account.name, Label.name, Label.color)
+             .outerjoin(Account, Account.id == PayrollReimbursement.account_id)
+             .outerjoin(Label, Label.id == PayrollReimbursement.label_id))
+        if period:
+            q = q.where(PayrollReimbursement.paid_on >= period.start, PayrollReimbursement.paid_on < period.end)
+        if account_id:
+            q = q.where(PayrollReimbursement.account_id == account_id)
+        rows = s.exec(q).all()
+    return [{"id": None, "date": pd.Timestamp(p.paid_on), "account": acc or "", "label": lab or UNLABELLED,
+             "color": color or UNLABELLED_COLOR, "merchant": PAID_IN_SALARY, "description": p.note,
+             "amount": -p.amount_minor / 100} for p, acc, lab, color in rows]
 
 
 def income_frame(period: Period | None = None, account_id: int | None = None) -> pd.DataFrame:
     """One row per income credit (salary, interest...), in rupees."""
     rows = _frame((Transaction.kind == TxnKind.income) & (Transaction.direction == Direction.credit),
                   period, account_id)
-    return pd.DataFrame([_record(t, acc, lab, color, t.amount_minor) for t, acc, lab, color in rows],
-                        columns=COLUMNS)
+    records = [_record(t, acc, lab, color, t.amount_minor) for t, acc, lab, color in rows]
+    return pd.DataFrame(records + _payroll_records(period, account_id), columns=COLUMNS)
 
 
 def monthly_totals(df: pd.DataFrame, period: Period | None, from_first_data: bool = True) -> pd.Series:

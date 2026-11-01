@@ -6,7 +6,7 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from ..db import get_session
-from ..db.models import Account, CCStatement, ImportBatch, Transaction
+from ..db.models import Account, CCStatement, ImportBatch, PayrollReimbursement, Transaction
 from . import vault
 
 VISIBLE_PREFIX = 5
@@ -38,13 +38,15 @@ def save_account(account: Account, full_number: str | None = None) -> Account:
 
 
 def usage_count(account_id: int) -> int:
-    """Rows that belong to the account (transactions + card statements)."""
+    """Rows that belong to the account (transactions, card statements, salary reimbursements)."""
     with get_session() as s:
         txns = s.exec(select(func.count()).select_from(Transaction)
                       .where(Transaction.account_id == account_id)).one()
         stmts = s.exec(select(func.count()).select_from(CCStatement)
                        .where(CCStatement.account_id == account_id)).one()
-    return txns + stmts
+        payroll = s.exec(select(func.count()).select_from(PayrollReimbursement)
+                         .where(PayrollReimbursement.account_id == account_id)).one()
+    return txns + stmts + payroll
 
 
 def delete_account(account_id: int) -> None:

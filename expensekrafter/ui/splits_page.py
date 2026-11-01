@@ -1,10 +1,13 @@
-"""Splits: expenses you paid for others, who still owes what, and their repayments."""
+"""Splits: expenses you paid for others, who still owes what, and their repayments.
+Also reimbursements your employer pays inside your salary."""
 
 from __future__ import annotations
 
+from datetime import date
+
 from nicegui import ui
 
-from ..services import splits
+from ..services import ledger, payroll, splits
 from ..services.money import fmt, to_minor
 from .layout import frame
 
@@ -43,7 +46,7 @@ def _credit_option(c: splits.Credit) -> str:
 
 @ui.page("/splits")
 def splits_page() -> None:
-    with frame("Splits", "Shared expenses and the money friends paid back"):
+    with frame("Splits", "Shared expenses, the money friends paid back, and reimbursements in your salary"):
         state = {"show": "open"}
 
         with ui.row().classes("w-full items-center gap-4"):
@@ -309,6 +312,90 @@ def splits_page() -> None:
             dlg.open()
 
         content()
+
+        @ui.refreshable
+        def salary_section() -> None:
+            items = payroll.entries()
+            with ui.card().classes("w-full gap-3"):
+                with ui.row().classes("w-full items-start no-wrap"):
+                    with ui.column().classes("gap-0"):
+                        ui.label("Reimbursed in your salary").classes("et-card-title")
+                        ui.label("Allowances your employer pays back with the salary (meals, internet...). "
+                                 "Each is taken off spend for its label and off income, so only what you "
+                                 "paid yourself counts.").classes("text-xs et-muted")
+                    ui.space()
+                    ui.button("Add", icon="add", on_click=lambda: salary_dialog(None, None))                         .props("outline dense no-caps").classes("flex-none")
+                if not items:
+                    ui.label("Nothing yet. Add one for each month, using the amount on your payslip.")                         .classes("et-faint text-sm")
+                    return
+                with ui.column().classes("w-full gap-0"):
+                    for e in items:
+                        with ui.row().classes("w-full items-center gap-3 no-wrap py-1"):
+                            ui.label(f"{e.paid_on:%d %b %Y}").classes("et-faint text-sm w-24 flex-none")
+                            ui.html(f'<span style="display:inline-block;width:8px;height:8px;border-radius:50%;'
+                                    f'background:{e.color or "#a9aeab"}"></span>', sanitize=False)
+                            ui.label(e.label or "No label").classes("w-40 truncate font-medium")
+                            ui.label(" · ".join(x for x in (e.note, e.account) if x))                                 .classes("et-muted text-sm flex-1 truncate")
+                            ui.label(fmt(e.amount_minor)).classes("et-num font-medium w-28 text-right")
+                            with ui.button(icon="more_vert").props("flat round dense"):
+                                with ui.menu():
+                                    ui.menu_item("Edit", on_click=lambda e=e: salary_dialog(e, None))
+                                    ui.menu_item("Add again for the next month",
+                                                 on_click=lambda e=e: salary_dialog(None, e))
+                                    ui.menu_item("Delete", on_click=lambda e=e: (
+                                        payroll.delete(e.id), ui.notify("Removed"), salary_section.refresh()))
+
+        def salary_dialog(entry: payroll.Entry | None, like: payroll.Entry | None) -> None:
+            """Edit `entry`, or add a new one (copying `like`, a month later)."""
+            src = entry or like
+            labels = {lab.id: lab.name for lab in ledger.labels()}
+            accounts = {a.id: a.name for a in ledger.accounts()}
+            if entry:
+                when = entry.paid_on
+            elif like:
+                y, m = divmod(like.paid_on.year * 12 + like.paid_on.month, 12)
+                when = date(y, m + 1, min(like.paid_on.day, 28))
+            else:
+                when = date.today()
+            default_label = next((i for i, n in labels.items() if n.lower().startswith("food")), None)
+            with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[32rem] max-w-full gap-3"):
+                ui.label("Edit reimbursement" if entry else "Reimbursed in salary").classes("et-card-title")
+                ui.label("The part of your salary that pays back an expense, e.g. the meal allowance on "
+                         "your payslip. Date it in the month it covers (October's allowance in October, even "
+                         "if the salary comes on 1 November).").classes("text-sm et-muted")
+                with ui.row().classes("w-full gap-3 no-wrap"):
+                    paid_on = ui.input("Counts in", value=when.isoformat()).props("outlined dense type=date")                         .classes("flex-1").tooltip("A day in the month whose spending it pays back")
+                    amount = ui.number("Amount ₹", value=src.amount_minor / 100 if src else None, min=0,
+                                       format="%.2f").props("outlined dense stack-label").classes("flex-1")
+                label = ui.select(labels, label="Pays back (label)",
+                                  value=src.label_id if src else default_label, with_input=True)                     .props("outlined dense options-dense").classes("w-full")
+                account = ui.select({None: "—"} | accounts, label="Salary account",
+                                    value=src.account_id if src else payroll.salary_account())                     .props("outlined dense options-dense").classes("w-full")
+                note = ui.input("Note", value=src.note if src else "", placeholder="e.g. HungerBox meal allowance")                     .props("outlined dense").classes("w-full")
+
+                def save() -> None:
+                    try:
+                        day = date.fromisoformat(paid_on.value)
+                    except (TypeError, ValueError):
+                        ui.notify("Pick the date", type="warning")
+                        return
+                    try:
+                        payroll.save(entry.id if entry else None, day, to_minor(amount.value or 0),
+                                     label.value, account.value, note.value or "")
+                    except payroll.PayrollError as e:
+                        ui.notify(str(e), type="warning")
+                        return
+                    ui.notify("Saved", type="positive")
+                    dlg.close()
+                    salary_section.refresh()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Save", icon="check", on_click=save)
+            dlg.on("hide", dlg.delete)
+            dlg.open()
+
+        salary_section()
         # Dialogs are created here, not inside the card menu that opens them (a
         # closing menu would take its dialog with it).
         dialog_host = ui.element("div")

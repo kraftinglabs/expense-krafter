@@ -172,6 +172,21 @@ class SplitShare(SQLModel, table=True):
     amount_minor: int
 
 
+class PayrollReimbursement(SQLModel, table=True):
+    """Money your employer pays back inside your salary (a meal allowance, an
+    internet bill). There's no bank credit of its own to mark, so it's entered
+    by hand: spend analysis takes it off its label and income analysis takes it
+    off the salary, so it isn't counted as both income and a saving."""
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    paid_on: date = Field(index=True)
+    amount_minor: int
+    label_id: Optional[int] = Field(default=None, foreign_key="label.id")
+    # The account the salary went into (for the dashboard's account filter).
+    account_id: Optional[int] = Field(default=None, foreign_key="account.id")
+    note: str = ""
+
+
 class ReimbursementLink(SQLModel, table=True):
     """Links money paid back by others (a bank credit) to the expense it
     reimburses. The expense is either a single transaction or a group."""

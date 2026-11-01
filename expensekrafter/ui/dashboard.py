@@ -647,8 +647,12 @@ def dashboard_page() -> None:
                           len(df), total / _days_elapsed(df, period), total / _months_in(df, period))
                 kept = earned - total
                 with ui.element("div").classes("grid grid-cols-2 2xl:grid-cols-3 gap-4 flex-[2] min-w-[30rem]"):
+                    in_salary = income["merchant"] == analytics.PAID_IN_SALARY
+                    credits = int((~in_salary).sum())
                     _kpi("Income", _rupees(earned), "south_west",
-                         f"{len(income)} credit{'s' if len(income) != 1 else ''} marked income")
+                         f"{credits} credit{'s' if credits != 1 else ''} marked income"
+                         + (f", less {_rupees(-income.loc[in_salary, 'amount'].sum())} reimbursed"
+                            if in_salary.any() else ""))
                     _kpi("Kept", _rupees(kept), "savings",
                          f"{kept / earned * 100:.0f}% of income" if earned else "no income in this period",
                          "et-warn" if kept < 0 else "et-faint")

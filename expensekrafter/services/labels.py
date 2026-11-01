@@ -8,7 +8,7 @@ from sqlalchemy import func
 from sqlmodel import select
 
 from ..db import get_session
-from ..db.models import ExpenseGroup, IntervalUnit, Label, Transaction
+from ..db.models import ExpenseGroup, IntervalUnit, Label, PayrollReimbursement, Transaction
 
 # Distinct, mid-tone colours that read on white and as chart series. New labels
 # get one at random, preferring colours no other label uses yet.
@@ -62,12 +62,14 @@ def pick_color(rng: random.Random | None = None) -> str:
 
 
 def usage_count(label_id: int) -> int:
-    """Transactions and groups that use the label."""
+    """Transactions, groups and salary reimbursements that use the label."""
     with get_session() as s:
         txns = s.exec(select(func.count()).select_from(Transaction).where(Transaction.label_id == label_id)).one()
         groups = s.exec(select(func.count()).select_from(ExpenseGroup)
                         .where(ExpenseGroup.label_id == label_id)).one()
-    return txns + groups
+        payroll = s.exec(select(func.count()).select_from(PayrollReimbursement)
+                         .where(PayrollReimbursement.label_id == label_id)).one()
+    return txns + groups + payroll
 
 
 def _check_name(name: str, label_id: int | None = None) -> str:
