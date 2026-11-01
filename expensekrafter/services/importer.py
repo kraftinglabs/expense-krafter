@@ -8,7 +8,7 @@ from datetime import date
 from pathlib import Path
 
 from sqlalchemy import func
-from sqlmodel import select
+from sqlmodel import col, select
 
 from ..db import get_session
 from ..db.models import (Account, AccountType, CCStatement, Direction, ImportBatch, SkippedRow, Transaction,
@@ -122,11 +122,24 @@ def preview_import(account_id: int, path: Path, parser_key: str | None = None,
             select(SkippedRow.fingerprint).where(SkippedRow.account_id == account_id,
                                                  SkippedRow.fingerprint.in_(fps))
         ).all()) if fps else set()
+        # The same bank row can come with differently spaced or cut-off narration
+        # in another export of the statement (email PDF/XLS vs net banking), which
+        # changes its fingerprint. The balance after it already pins it down.
+        dates = {t.txn_date for t in statement.transactions if t.balance_minor is not None}
+        on_balance = set(s.exec(
+            select(Transaction.txn_date, Transaction.amount_minor, Transaction.direction, Transaction.balance_minor)
+            .where(Transaction.account_id == account_id, Transaction.balance_minor != None,  # noqa: E711
+                   Transaction.expected == False, col(Transaction.txn_date).in_(dates))  # noqa: E712
+        ).all()) if dates else set()
+
+    def imported(t: ParsedTxn, fp: str) -> bool:
+        return fp in existing or (t.balance_minor is not None and
+                                  (t.txn_date, t.amount_minor, t.direction, t.balance_minor) in on_balance)
 
     return ImportPreview(
         account=account, path=path, filename=filename or path.name, parser_key=parser_key,
         file_sha256=sha, statement=statement, already_imported_file=already,
-        rows=[PreviewRow(t, fp, fp in existing, fp in skipped) for t, fp in zip(statement.transactions, fps)],
+        rows=[PreviewRow(t, fp, imported(t, fp), fp in skipped) for t, fp in zip(statement.transactions, fps)],
     )
 
 

@@ -158,3 +158,19 @@ def test_import_history_and_where_each_account_is_up_to(tmp_path, account_id):
     bank = by_name["Test Bank"]
     assert (bank.txn_count, bank.last_txn.description, bank.last_import.id) == (2, "UPI-ZOMATO", h.batch.id)
     assert by_name["Empty Card"].last_txn is None and by_name["Empty Card"].txn_count == 0
+
+
+def test_same_bank_row_with_different_narration_is_a_duplicate(tmp_path, account_id):
+    # One export pads and cuts the narration differently from the other
+    # (seen with SBI's emailed statement vs the net-banking download).
+    first = tmp_path / "email.xlsx"
+    _write_export(first, [["14/03/2026", "DEP TFR    NEFT*ABCD*ACME PAYRO  LL LT   0011 AT 01234 TE", None,
+                           "12,345.67", "1,00,000.00"]])
+    commit_import(preview_import(account_id, first, "generic_excel"))
+    second = tmp_path / "download.xlsx"
+    _write_export(second, [
+        ["14/03/2026", "DEP TFR   NEFT*ABCD*ACME PAYRO  LL LT   0011 AT 01234 TEM", None, "12,345.67", "1,00,000.00"],
+        ["14/03/2026", "UPI-SWIGGY", "250.00", None, "99,750.00"],
+    ])
+    p = preview_import(account_id, second, "generic_excel")
+    assert p.duplicate_count == 1 and [r.txn.description for r in p.new_rows] == ["UPI-SWIGGY"]
