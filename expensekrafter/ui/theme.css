@@ -304,3 +304,10 @@ html, body {
 .et-draggable:active { cursor: grabbing; }
 .et-drop-zone { border: 1px dashed var(--border); border-radius: 10px; transition: background .12s; }
 .et-drop-over { background: var(--surface-3); box-shadow: inset 0 0 0 2px #007d56; border-radius: 10px; }
+
+/* Transactions: search / filters / group bar pinned while the list scrolls. */
+.et-sticky-bar {
+  position: sticky; top: 0; z-index: 20;
+  background: var(--bg); margin: -8px 0; padding: 8px 0 12px;
+  border-bottom: var(--hair) solid var(--border);
+}

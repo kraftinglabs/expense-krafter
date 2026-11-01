@@ -1,5 +1,6 @@
-"""Splits: expenses you paid for others, who still owes what, and their repayments.
-Also reimbursements your employer pays inside your salary."""
+"""Splits & reimbursements: expenses (single transactions or groups, like a trip)
+that friends or your company pay you back for, who still owes what, and their
+repayments. Also reimbursements your employer pays inside your salary."""
 
 from __future__ import annotations
 
@@ -47,7 +48,8 @@ def _credit_option(c: splits.Credit) -> str:
 
 @ui.page("/splits")
 def splits_page() -> None:
-    with frame("Splits", "Shared expenses, the money friends paid back, and reimbursements in your salary"):
+    with frame("Splits & reimbursements", "Money friends or your company owe you back, what's come in, and "
+                                          "reimbursements in your salary"):
         state = {"show": "open"}
 
         with ui.row().classes("w-full items-center gap-4"):
@@ -55,7 +57,7 @@ def splits_page() -> None:
                 .props("unelevated no-caps toggle-color=primary color=transparent text-color=grey-8 "
                        "padding='6px 14px'").classes("et-segment")
             ui.space()
-            ui.button("New split", icon="add", on_click=lambda: split_dialog(None))
+            ui.button("New split / reimbursement", icon="add", on_click=lambda: split_dialog(None))
 
         @ui.refreshable
         def content() -> None:
@@ -93,7 +95,8 @@ def splits_page() -> None:
             if not shown:
                 with ui.column().classes("w-full items-center py-16 gap-2"):
                     ui.icon("call_split").classes("text-5xl et-faint")
-                    ui.label("Paid for friends? Click New split, pick the expense and say who owes what."
+                    ui.label("Paid for friends, or for a work trip? Click New split / reimbursement, pick the "
+                             "expense or group and say who pays you back."
                              if not everything else "Nothing here.").classes("et-muted")
                 return
             # Collapsible; the header keeps the money still to come in view when it's folded.
@@ -130,7 +133,8 @@ def splits_page() -> None:
                 with ui.row().classes("w-full items-start no-wrap gap-4"):
                     with ui.column().classes("gap-0 flex-1 min-w-0"):
                         ui.label(sp.name).classes("font-semibold truncate w-full")
-                        details = [f"{sp.txn_date:%d %b %Y}", sp.account] + ([sp.label] if sp.label else [])
+                        details = ([f"{sp.members} transactions from {sp.txn_date:%d %b %Y}"] if sp.group_id
+                                   else [f"{sp.txn_date:%d %b %Y}"]) + [sp.account] + ([sp.label] if sp.label else [])
                         ui.label(" · ".join(details)).classes("text-xs et-faint")
                     with ui.column().classes("gap-0 items-end"):
                         ui.label(fmt(sp.amount_minor)).classes("et-num font-semibold")
@@ -177,9 +181,9 @@ def splits_page() -> None:
                                 ui.button(icon="link_off", on_click=lambda r=r: unlink(r)) \
                                     .props("flat round dense size=sm").tooltip("Remove this repayment")
 
-        def act(fn, *args, done: str = "") -> bool:
+        def act(fn, *args, done: str = "", **kwargs) -> bool:
             try:
-                fn(*args)
+                fn(*args, **kwargs)
             except splits.SplitError as e:
                 ui.notify(str(e), type="warning")
                 return False
@@ -200,7 +204,7 @@ def splits_page() -> None:
                 with ui.row().classes("w-full justify-end"):
                     ui.button("Cancel", on_click=dlg.close).props("flat")
                     ui.button("Delete", icon="delete",
-                              on_click=lambda: act(splits.delete_split, sp.txn_id, done="Split deleted")
+                              on_click=lambda: act(splits.delete_split, sp.txn_id, sp.group_id, done="Split deleted")
                               and dlg.close()).props("color=negative")
             dlg.open()
 
@@ -208,26 +212,32 @@ def splits_page() -> None:
             known = splits.people()
             rows: list[dict] = []
             with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[40rem] max-w-full gap-3"):
-                ui.label("Edit split" if sp else "New split").classes("et-card-title")
+                ui.label("Edit split" if sp else "New split / reimbursement").classes("et-card-title")
                 if sp:
                     ui.label(f"{sp.name} · {sp.txn_date:%d %b %Y} · {fmt(sp.amount_minor)}").classes("et-muted")
                     total = {"minor": sp.amount_minor}
                     expense = None
                 else:
                     candidates = splits.expense_candidates(limit=400)
-                    amounts = {t.id: t.amount_minor for t, _ in candidates}
+                    groups = splits.group_candidates()
+                    # Groups first (e.g. a whole trip), then single transactions.
+                    options = {f"g:{g.group_id}": f"Group · {g.name} · {g.count} transactions from "
+                                                  f"{g.first_date:%d %b %Y} · {fmt(g.amount_minor)}" for g in groups}
+                    options |= {f"t:{t.id}": _expense_option(t, acc) for t, acc in candidates}
+                    amounts = {f"g:{g.group_id}": g.amount_minor for g in groups}
+                    amounts |= {f"t:{t.id}": t.amount_minor for t, _ in candidates}
                     total = {"minor": 0}
                     mode = ui.toggle({"imported": "Already imported", "pending": "Card statement not in yet"},
                                      value="imported", on_change=lambda e: switch_mode()) \
                         .props("unelevated no-caps dense toggle-color=primary color=transparent "
                                "text-color=grey-8 padding='4px 12px'").classes("et-segment")
                     with ui.column().classes("w-full gap-2") as imported_box:
-                        expense = ui.select({t.id: _expense_option(t, acc) for t, acc in candidates},
-                                            label="Expense you paid", with_input=True,
+                        expense = ui.select(options, label="Expense or group you paid", with_input=True,
                                             on_change=lambda e: (total.update(minor=amounts.get(e.value, 0)),
                                                                  refresh_share())) \
                             .props("outlined dense options-dense").classes("w-full")
-                        ui.label("Type to search by name, account or amount.").classes("text-xs et-faint -mt-1")
+                        ui.label("Type to search by name, account or amount. Several transactions for one "
+                                 "thing (a trip)? Group them on Transactions first.").classes("text-xs et-faint -mt-1")
                     with ui.column().classes("w-full gap-2") as pending_box:
                         ui.label("Record it now; it's matched to the card transaction when you import that "
                                  "statement.").classes("text-xs et-muted")
@@ -259,7 +269,7 @@ def splits_page() -> None:
                                      else amounts.get(expense.value, 0))
                         refresh_share()
 
-                ui.label("Who owes you").classes("text-sm font-medium mt-2")
+                ui.label("Who pays you back").classes("text-sm font-medium mt-2")
                 people_box = ui.column().classes("w-full gap-2")
                 share_line = ui.label().classes("text-sm et-num")
 
@@ -322,11 +332,15 @@ def splits_page() -> None:
                                                                                 "when the statement comes in"):
                             dlg.close()
                         return
-                    txn_id = sp.txn_id if sp else expense.value
-                    if txn_id is None:
+                    if sp:
+                        txn_id, group_id = sp.txn_id, sp.group_id
+                    elif expense.value is None:
                         ui.notify("Pick the expense first", type="warning")
                         return
-                    if act(splits.save_split, txn_id, shares, done="Split saved"):
+                    else:
+                        kind, ident = expense.value.split(":")
+                        txn_id, group_id = (None, int(ident)) if kind == "g" else (int(ident), None)
+                    if act(splits.save_split, txn_id, shares, group_id, done="Split saved"):
                         dlg.close()
 
                 with ui.row().classes("w-full justify-end"):
@@ -412,7 +426,7 @@ def splits_page() -> None:
                         ui.notify("Pick the credit first", type="warning")
                         return
                     if act(splits.record_repayment, sp.txn_id, credit.value, p.person,
-                           to_minor(amount.value or 0), done="Repayment recorded"):
+                           to_minor(amount.value or 0), sp.group_id, done="Repayment recorded"):
                         dlg.close()
 
                 with ui.row().classes("w-full justify-end"):
@@ -422,18 +436,17 @@ def splits_page() -> None:
             dlg.open()
 
         def link_dialog(c: splits.Credit) -> None:
-            owing = {(sp.txn_id, p.person): (sp, p) for sp in splits.splits() for p in sp.people if p.remaining_minor}
+            owing = {f"{sp.key}|{p.person}": (sp, p) for sp in splits.splits() for p in sp.people if p.remaining_minor}
             with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[36rem] max-w-full gap-3"):
                 ui.label("Link a repayment").classes("et-card-title")
                 ui.label(f"{c.name} · {c.txn_date:%d %b %Y} · {fmt(c.free_minor)} to assign").classes("et-muted")
                 if not owing:
                     ui.label("Nobody owes you anything right now. Add a split first.").classes("et-warn text-sm")
-                options = {f"{tid}|{person}": f"{person} · {sp.name} · {sp.txn_date:%d %b %Y} · "
-                                              f"owes {fmt(p.remaining_minor)}"
-                           for (tid, person), (sp, p) in owing.items()}
+                options = {key: f"{p.person} · {sp.name} · {sp.txn_date:%d %b %Y} · owes {fmt(p.remaining_minor)}"
+                           for key, (sp, p) in owing.items()}
                 target = ui.select(options, label="Who paid, and for what", with_input=True,
                                    on_change=lambda e: amount.set_value(
-                                       min(c.free_minor, owing[_key(e.value)][1].remaining_minor) / 100
+                                       min(c.free_minor, owing[e.value][1].remaining_minor) / 100
                                        if e.value else None)) \
                     .props("outlined dense options-dense").classes("w-full")
                 amount = ui.number("Amount ₹", min=0, format="%.2f").props("outlined dense stack-label") \
@@ -442,9 +455,9 @@ def splits_page() -> None:
                 def save() -> None:
                     if target.value is None:
                         return
-                    tid, person = _key(target.value)
-                    if act(splits.record_repayment, tid, c.txn_id, person, to_minor(amount.value or 0),
-                           done="Repayment linked"):
+                    sp, p = owing[target.value]
+                    if act(splits.record_repayment, sp.txn_id, c.txn_id, p.person, to_minor(amount.value or 0),
+                           sp.group_id, done="Repayment linked"):
                         dlg.close()
 
                 with ui.row().classes("w-full justify-end"):
@@ -542,7 +555,3 @@ def splits_page() -> None:
         # closing menu would take its dialog with it).
         dialog_host = ui.element("div")
 
-
-def _key(value: str) -> tuple[int, str]:
-    tid, person = value.split("|", 1)
-    return int(tid), person

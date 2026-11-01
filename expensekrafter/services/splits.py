@@ -1,7 +1,9 @@
 """Shared expenses: who owes you what for an expense you paid, and the money
 they've sent back.
 
-A split is an expense with one SplitShare per person. Repayments are bank
+A split is an expense with one SplitShare per person. The expense is one
+transaction or an expense group (several transactions that are one expense,
+e.g. a trip): functions take the transaction id, or group_id= for a group. Repayments are bank
 credits linked to the expense with a ReimbursementLink (one credit can cover
 several splits or people, one person can pay in parts). Spend analysis takes
 linked repayments off the expense itself, so only your share counts as spend
@@ -24,7 +26,8 @@ from datetime import date, timedelta
 from sqlmodel import col, select
 
 from ..db import get_session
-from ..db.models import Account, Direction, Label, ReimbursementLink, SplitShare, Transaction, TxnKind
+from ..db.models import (Account, Direction, ExpenseGroup, Label, ReimbursementLink, SplitShare, Transaction,
+                         TxnKind)
 from .analytics import merchant_name
 from .money import fmt
 
@@ -56,7 +59,7 @@ class PersonShare:
 
 @dataclass
 class Split:
-    txn_id: int
+    txn_id: int | None  # None for a group split (see group_id)
     txn_date: date
     description: str
     account: str
@@ -66,10 +69,16 @@ class Split:
     repayments: list[Repayment] = field(default_factory=list)
     expected: bool = False  # pending: the card statement with it isn't imported yet
     account_id: int | None = None
+    group_id: int | None = None  # a split over an expense group
+    members: int = 0  # transactions in that group
 
     @property
     def name(self) -> str:
-        return self.description if self.expected else merchant_name(self.description)
+        return self.description if self.expected or self.group_id else merchant_name(self.description)
+
+    @property
+    def key(self) -> str:
+        return f"g:{self.group_id}" if self.group_id else f"t:{self.txn_id}"
 
     @property
     def owed_minor(self) -> int:
@@ -132,37 +141,69 @@ def _clean_shares(amount_minor: int, shares: dict[str, int]) -> dict[str, int]:
     return out
 
 
-def save_split(expense_txn_id: int, shares: dict[str, int]) -> None:
-    """Set who owes what for an expense, replacing any earlier shares.
-    Repayments already recorded stay."""
+def _on(model, txn_id: int | None, group_id: int | None):
+    """Where-clause for SplitShare / ReimbursementLink rows of one expense."""
+    if group_id is not None:
+        return model.expense_group_id == group_id
+    return model.expense_txn_id == txn_id
+
+
+def group_members(s, group_ids) -> dict[int, list[Transaction]]:
+    out: dict[int, list[Transaction]] = defaultdict(list)
+    if group_ids:
+        for t in s.exec(select(Transaction).where(col(Transaction.group_id).in_(set(group_ids)),
+                                                  Transaction.expected == False)):  # noqa: E712
+            out[t.group_id].append(t)
+    return out
+
+
+def _group_amount(members: list[Transaction]) -> int:
+    """What a group cost: its payments less any refunds in it."""
+    return sum(t.amount_minor if t.direction == Direction.debit else -t.amount_minor for t in members)
+
+
+def _expense_amount(s, txn_id: int | None, group_id: int | None) -> int:
+    if group_id is not None:
+        if s.get(ExpenseGroup, group_id) is None:
+            raise SplitError("That group no longer exists.")
+        amount = _group_amount(group_members(s, [group_id])[group_id])
+        if amount <= 0:
+            raise SplitError("That group has no money paid out to split.")
+        return amount
+    txn = s.get(Transaction, txn_id)
+    if txn is None or txn.direction != Direction.debit:
+        raise SplitError("Only money you paid out can be split.")
+    return txn.amount_minor
+
+
+def save_split(expense_txn_id: int | None, shares: dict[str, int], group_id: int | None = None) -> None:
+    """Set who owes what for an expense (or a group), replacing any earlier
+    shares. Repayments already recorded stay."""
     with get_session() as s:
-        txn = s.get(Transaction, expense_txn_id)
-        if txn is None or txn.direction != Direction.debit:
-            raise SplitError("Only money you paid out can be split.")
-        clean = _clean_shares(txn.amount_minor, shares)
-        paid = _paid_by_person(s, [expense_txn_id]).get(expense_txn_id, {})
-        for person, amount in paid.items():
+        clean = _clean_shares(_expense_amount(s, expense_txn_id, group_id), shares)
+        for person, amount in _paid(s, expense_txn_id, group_id).items():
             owed = next((v for k, v in clean.items() if k.casefold() == person.casefold()), 0)
             if amount > owed:
                 raise SplitError(f"{person} has already paid back {fmt(amount)}; their share can't be less, "
                                  "or remove that repayment first.")
-        for old in s.exec(select(SplitShare).where(SplitShare.expense_txn_id == expense_txn_id)):
+        for old in s.exec(select(SplitShare).where(_on(SplitShare, expense_txn_id, group_id))):
             s.delete(old)
-        s.add_all(SplitShare(expense_txn_id=expense_txn_id, person=p, amount_minor=a) for p, a in clean.items())
+        s.add_all(SplitShare(expense_txn_id=None if group_id is not None else expense_txn_id,
+                             expense_group_id=group_id, person=p, amount_minor=a) for p, a in clean.items())
         s.commit()
 
 
-def delete_split(expense_txn_id: int) -> None:
+def delete_split(expense_txn_id: int | None, group_id: int | None = None) -> None:
     """Forget the split and its repayment links. The repayment credits stay
     marked as reimbursements, so they still count against spend on the day
-    they arrived. A pending split's placeholder goes too."""
+    they arrived. A pending split's placeholder goes too; a group stays."""
     with get_session() as s:
-        for row in s.exec(select(SplitShare).where(SplitShare.expense_txn_id == expense_txn_id)):
+        for row in s.exec(select(SplitShare).where(_on(SplitShare, expense_txn_id, group_id))):
             s.delete(row)
-        for row in s.exec(select(ReimbursementLink).where(ReimbursementLink.expense_txn_id == expense_txn_id)):
+        for row in s.exec(select(ReimbursementLink).where(_on(ReimbursementLink, expense_txn_id, group_id))):
             s.delete(row)
         s.flush()
-        if (txn := s.get(Transaction, expense_txn_id)) is not None and txn.expected:
+        if group_id is None and (txn := s.get(Transaction, expense_txn_id)) is not None and txn.expected:
             s.delete(txn)
         s.commit()
 
@@ -274,10 +315,11 @@ def attach_pending(pending_id: int, txn_id: int) -> None:
         s.commit()
 
 
-def _paid_by_person(s, txn_ids: list[int]) -> dict[int, dict[str, int]]:
-    out: dict[int, dict[str, int]] = defaultdict(lambda: defaultdict(int))
-    for link in s.exec(select(ReimbursementLink).where(col(ReimbursementLink.expense_txn_id).in_(txn_ids))):
-        out[link.expense_txn_id][link.person] += link.amount_minor
+def _paid(s, txn_id: int | None, group_id: int | None) -> dict[str, int]:
+    """What each person has paid back for one expense."""
+    out: dict[str, int] = defaultdict(int)
+    for link in s.exec(select(ReimbursementLink).where(_on(ReimbursementLink, txn_id, group_id))):
+        out[link.person] += link.amount_minor
     return out
 
 
@@ -291,11 +333,12 @@ def _linked_by_credit(s, credit_ids: list[int] | None = None) -> dict[int, int]:
     return out
 
 
-def record_repayment(expense_txn_id: int, credit_txn_id: int, person: str, amount_minor: int) -> None:
-    """Link (part of) a bank credit to what `person` owes for an expense. The
-    credit is marked as a reimbursement."""
+def record_repayment(expense_txn_id: int | None, credit_txn_id: int, person: str, amount_minor: int,
+                     group_id: int | None = None) -> None:
+    """Link (part of) a bank credit to what `person` owes for an expense (or a
+    group). The credit is marked as a reimbursement."""
     with get_session() as s:
-        share = next((sh for sh in s.exec(select(SplitShare).where(SplitShare.expense_txn_id == expense_txn_id))
+        share = next((sh for sh in s.exec(select(SplitShare).where(_on(SplitShare, expense_txn_id, group_id)))
                       if sh.person.casefold() == person.casefold()), None)
         if share is None:
             raise SplitError(f"{person} isn't part of this split.")
@@ -307,10 +350,11 @@ def record_repayment(expense_txn_id: int, credit_txn_id: int, person: str, amoun
         free = credit.amount_minor - _linked_by_credit(s, [credit_txn_id]).get(credit_txn_id, 0)
         if amount_minor > free:
             raise SplitError(f"Only {fmt(free)} of that credit is left to assign.")
-        owing = share.amount_minor - _paid_by_person(s, [expense_txn_id])[expense_txn_id].get(share.person, 0)
+        owing = share.amount_minor - _paid(s, expense_txn_id, group_id).get(share.person, 0)
         if amount_minor > owing:
             raise SplitError(f"{share.person} only owes {fmt(max(owing, 0))} more for this.")
-        s.add(ReimbursementLink(expense_txn_id=expense_txn_id, credit_txn_id=credit_txn_id,
+        s.add(ReimbursementLink(expense_txn_id=None if group_id is not None else expense_txn_id,
+                                expense_group_id=group_id, credit_txn_id=credit_txn_id,
                                 amount_minor=amount_minor, person=share.person))
         credit.kind = TxnKind.reimbursement
         credit.kind_manual = True  # you linked it yourself
@@ -325,27 +369,44 @@ def remove_repayment(link_id: int) -> None:
             s.commit()
 
 
+def _key(row) -> str:
+    return f"g:{row.expense_group_id}" if row.expense_group_id is not None else f"t:{row.expense_txn_id}"
+
+
 def splits() -> list[Split]:
-    """Every split expense, newest first."""
+    """Every split expense (transaction or group), newest first."""
     with get_session() as s:
         shares = list(s.exec(select(SplitShare)))
-        links = [ln for ln in s.exec(select(ReimbursementLink)) if ln.expense_txn_id is not None]
-        ids = {sh.expense_txn_id for sh in shares} | {ln.expense_txn_id for ln in links}
-        if not ids:
+        links = [ln for ln in s.exec(select(ReimbursementLink))
+                 if ln.expense_txn_id is not None or ln.expense_group_id is not None]
+        rows = [*shares, *links]
+        txn_ids = {r.expense_txn_id for r in rows if r.expense_group_id is None}
+        group_ids = {r.expense_group_id for r in rows if r.expense_group_id is not None}
+        if not txn_ids and not group_ids:
             return []
-        rows = s.exec(select(Transaction, Account.name, Label.name)
+        txns = s.exec(select(Transaction, Account.name, Label.name)
                       .join(Account, Account.id == Transaction.account_id)
                       .join(Label, Label.id == Transaction.label_id, isouter=True)
-                      .where(col(Transaction.id).in_(ids))).all()
+                      .where(col(Transaction.id).in_(txn_ids))).all()
+        groups = {g.id: g for g in s.exec(select(ExpenseGroup).where(col(ExpenseGroup.id).in_(group_ids)))}
+        members = group_members(s, group_ids)
+        acc_names = {a.id: a.name for a in s.exec(select(Account))}
+        label_names = {lab.id: lab.name for lab in s.exec(select(Label))}
         credits = {t.id: (t, acc) for t, acc in s.exec(
             select(Transaction, Account.name).join(Account, Account.id == Transaction.account_id)
             .where(col(Transaction.id).in_({ln.credit_txn_id for ln in links})))}
-    out = {t.id: Split(t.id, t.txn_date, t.description, acc, lab or "", t.amount_minor, expected=t.expected,
-                       account_id=t.account_id) for t, acc, lab in rows}
+    out = {f"t:{t.id}": Split(t.id, t.txn_date, t.description, acc, lab or "", t.amount_minor,
+                              expected=t.expected, account_id=t.account_id) for t, acc, lab in txns}
+    for gid, g in groups.items():
+        items = members.get(gid, [])
+        label = label_names.get(g.label_id) or next((label_names[t.label_id] for t in items if t.label_id), "")
+        out[f"g:{gid}"] = Split(None, min((t.txn_date for t in items), default=g.created_at.date()), g.name,
+                                ", ".join(sorted({acc_names[t.account_id] for t in items})), label,
+                                _group_amount(items), group_id=gid, members=len(items))
     for sh in shares:
-        out[sh.expense_txn_id].people.append(PersonShare(sh.person, sh.amount_minor))
+        out[_key(sh)].people.append(PersonShare(sh.person, sh.amount_minor))
     for ln in links:
-        sp = out[ln.expense_txn_id]
+        sp = out[_key(ln)]
         credit, acc = credits[ln.credit_txn_id]
         sp.repayments.append(Repayment(ln.id, credit.id, credit.txn_date, acc, ln.person, ln.amount_minor))
         person = next((p for p in sp.people if p.person.casefold() == ln.person.casefold()), None)
@@ -355,7 +416,7 @@ def splits() -> list[Split]:
         person.paid_minor += ln.amount_minor
     for sp in out.values():
         sp.repayments.sort(key=lambda r: r.credit_date)
-    return sorted(out.values(), key=lambda sp: (sp.txn_date, sp.txn_id), reverse=True)
+    return sorted(out.values(), key=lambda sp: (sp.txn_date, sp.txn_id or 0), reverse=True)
 
 
 def people() -> list[str]:
@@ -371,12 +432,35 @@ def _matches(text: str, query: str) -> bool:
     return all(w.lstrip("₹") in text for w in words)
 
 
+@dataclass
+class GroupOption:
+    group_id: int
+    name: str
+    first_date: date
+    count: int
+    amount_minor: int
+
+
+def group_candidates() -> list[GroupOption]:
+    """Expense groups that could be split (money paid out, no split yet), newest first."""
+    with get_session() as s:
+        groups = list(s.exec(select(ExpenseGroup)))
+        taken = set(s.exec(select(SplitShare.expense_group_id)).all())
+        members = group_members(s, [g.id for g in groups])
+    out = [GroupOption(g.id, g.name, min(t.txn_date for t in members[g.id]), len(members[g.id]),
+                       _group_amount(members[g.id]))
+           for g in groups if g.id not in taken and members.get(g.id)]
+    return sorted((o for o in out if o.amount_minor > 0), key=lambda o: o.first_date, reverse=True)
+
+
 def expense_candidates(query: str = "", limit: int = 60) -> list[tuple[Transaction, str]]:
-    """Money you paid out that could be split, newest first."""
+    """Money you paid out that could be split, newest first. Transactions in a
+    group are left out: split the group instead."""
     with get_session() as s:
         rows = s.exec(select(Transaction, Account.name).join(Account, Account.id == Transaction.account_id)
                       .where(Transaction.direction == Direction.debit, Transaction.kind == TxnKind.expense,
-                             Transaction.expected == False)  # noqa: E712
+                             Transaction.expected == False,  # noqa: E712
+                             Transaction.group_id == None)  # noqa: E711
                       .order_by(col(Transaction.txn_date).desc(), col(Transaction.id).desc())).all()
     out = []
     for t, acc in rows:

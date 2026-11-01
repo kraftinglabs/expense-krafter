@@ -171,10 +171,12 @@ class CCPaymentLink(SQLModel, table=True):
 
 class SplitShare(SQLModel, table=True):
     """What one person owes you for an expense you paid for everyone. Your own
-    share is whatever the shares don't cover."""
+    share is whatever the shares don't cover. The expense is either a single
+    transaction or a group (e.g. a whole trip)."""
 
     id: Optional[int] = Field(default=None, primary_key=True)
-    expense_txn_id: int = Field(foreign_key="transaction.id", index=True)
+    expense_txn_id: Optional[int] = Field(default=None, foreign_key="transaction.id", index=True)
+    expense_group_id: Optional[int] = Field(default=None, foreign_key="expensegroup.id", index=True)
     person: str
     amount_minor: int
 

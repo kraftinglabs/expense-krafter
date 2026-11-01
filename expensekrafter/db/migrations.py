@@ -74,6 +74,27 @@ def _m007_expected_txn(conn: Connection) -> None:
         conn.exec_driver_sql('ALTER TABLE "transaction" ADD COLUMN expected BOOLEAN NOT NULL DEFAULT 0')
 
 
+def _m008_group_splits(conn: Connection) -> None:
+    """splitshare.expense_group_id, and expense_txn_id nullable, so a split can
+    cover a group. SQLite can't relax NOT NULL in place: rebuild the table."""
+    if "expense_group_id" in _columns(conn, "splitshare"):
+        return
+    conn.exec_driver_sql("""
+        CREATE TABLE splitshare_new (
+            id INTEGER NOT NULL PRIMARY KEY,
+            expense_txn_id INTEGER REFERENCES "transaction" (id),
+            expense_group_id INTEGER REFERENCES expensegroup (id),
+            person VARCHAR NOT NULL,
+            amount_minor INTEGER NOT NULL
+        )""")
+    conn.exec_driver_sql("INSERT INTO splitshare_new (id, expense_txn_id, person, amount_minor) "
+                         "SELECT id, expense_txn_id, person, amount_minor FROM splitshare")
+    conn.exec_driver_sql("DROP TABLE splitshare")
+    conn.exec_driver_sql("ALTER TABLE splitshare_new RENAME TO splitshare")
+    conn.exec_driver_sql("CREATE INDEX ix_splitshare_expense_txn_id ON splitshare (expense_txn_id)")
+    conn.exec_driver_sql("CREATE INDEX ix_splitshare_expense_group_id ON splitshare (expense_group_id)")
+
+
 MIGRATIONS = [
     _m001_mask_account_number,
     _m002_database_id,
@@ -82,6 +103,7 @@ MIGRATIONS = [
     _m005_label_interval,
     _m006_label_parent,
     _m007_expected_txn,
+    _m008_group_splits,
 ]
 
 

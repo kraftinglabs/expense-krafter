@@ -56,3 +56,36 @@ def test_label_frequency_becomes_interval(tmp_path):
                    "Gym": (3, IntervalUnit.month), "Food": (None, None)}
     cols = {r[1] for r in sqlite3.connect(db).execute("PRAGMA table_info(label)")}
     assert "frequency" not in cols
+
+
+def test_split_shares_move_to_the_new_table(tmp_path):
+    from datetime import date
+    from expensekrafter.db.models import Direction, Transaction
+
+    db = tmp_path / "splits.db"
+    init_db(db_path=db)
+    with get_session() as s:
+        acc = Account(name="Bank", type=AccountType.bank)
+        s.add(acc)
+        s.flush()
+        txn = Transaction(account_id=acc.id, txn_date=date(2026, 10, 1), description="DINNER", amount_minor=9000,
+                          direction=Direction.debit, fingerprint="f")
+        s.add(txn)
+        s.commit()
+        txn_id = txn.id
+    con = sqlite3.connect(db)
+    con.execute("DROP TABLE splitshare")  # the table as it was before group splits
+    con.execute("""CREATE TABLE splitshare (id INTEGER NOT NULL PRIMARY KEY,
+                   expense_txn_id INTEGER NOT NULL REFERENCES "transaction" (id),
+                   person VARCHAR NOT NULL, amount_minor INTEGER NOT NULL)""")
+    con.execute("INSERT INTO splitshare VALUES (1, ?, 'Asha', 5000)", (txn_id,))
+    con.execute("PRAGMA user_version = 7")
+    con.commit()
+    con.close()
+
+    init_db(db_path=db)
+    con = sqlite3.connect(db)
+    assert con.execute("SELECT id, expense_txn_id, expense_group_id, person, amount_minor FROM splitshare") \
+        .fetchall() == [(1, txn_id, None, "Asha", 5000)]
+    notnull = {r[1]: r[3] for r in con.execute("PRAGMA table_info(splitshare)")}
+    assert notnull["expense_txn_id"] == 0

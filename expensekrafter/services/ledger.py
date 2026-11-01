@@ -9,7 +9,8 @@ from datetime import date
 from sqlmodel import col, select
 
 from ..db import get_session
-from ..db.models import Account, Direction, ExpenseGroup, Label, Transaction, TxnKind
+from ..db.models import (Account, Direction, ExpenseGroup, Label, ReimbursementLink, SplitShare, Transaction,
+                         TxnKind)
 from . import narration
 from .labels import with_children
 
@@ -201,9 +202,20 @@ def group_transactions(txn_ids: list[int], name: str) -> ExpenseGroup:
 
 
 def ungroup_transactions(txn_ids: list[int]) -> None:
+    """Take transactions out of their groups. A group with a split or
+    repayment on it can't be emptied: delete that split first."""
     with get_session() as s:
         txns = list(s.exec(select(Transaction).where(col(Transaction.id).in_(txn_ids))))
         group_ids = {t.group_id for t in txns if t.group_id}
+        for gid in group_ids:
+            left = s.exec(select(Transaction).where(Transaction.group_id == gid,
+                                                    col(Transaction.id).not_in(txn_ids))).first()
+            has_split = (s.exec(select(SplitShare).where(SplitShare.expense_group_id == gid)).first()
+                         or s.exec(select(ReimbursementLink).where(ReimbursementLink.expense_group_id == gid)).first())
+            if has_split and not left:
+                name = s.get(ExpenseGroup, gid).name
+                raise ValueError(f"“{name}” has a split; delete it on Splits & reimbursements before ungrouping "
+                                 "all of it")
         for t in txns:
             t.group_id = None
             s.add(t)

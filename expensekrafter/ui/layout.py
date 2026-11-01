@@ -14,7 +14,7 @@ NAV = [
     ("Transactions", "/transactions", "receipt_long"),
     ("Import", "/import", "upload_file"),
     ("Credit cards", "/cards", "credit_card"),
-    ("Splits", "/splits", "call_split"),
+    ("Splits & reimbursements", "/splits", "call_split"),
     ("Accounts", "/accounts", "account_balance"),
     ("Labels", "/labels", "sell"),
     ("Settings", "/settings", "tune"),

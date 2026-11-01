@@ -55,66 +55,68 @@ def transactions_page() -> None:
             filters_btn.props(f"color={'primary' if n else 'grey-8'}")
             months.refresh()
 
-        with ui.row().classes("w-full items-center gap-3"):
-            search = ui.input(placeholder="Search name, details, notes, label, amount…",
-                              on_change=lambda e: (setattr(f, "search", e.value or ""), apply())) \
-                .props("outlined dense clearable debounce=300").classes("w-80")
-            with search.add_slot("prepend"):
-                ui.icon("search")
-            ui.select({None: "All accounts"} | accounts, value=None,
-                      on_change=lambda e: (setattr(f, "account_id", e.value), apply())) \
-                .props("outlined dense options-dense").classes("w-52")
-            filters_btn = ui.button("Filters", icon="tune", on_click=lambda: panel.set_visibility(not panel.visible)) \
-                .props("outline color=grey-8")
-            ui.switch("Unlabelled only", on_change=lambda e: (setattr(f, "unlabelled_only", e.value), apply())) \
-                .classes("et-muted")
-            ui.space()
-            selection_label = ui.label().classes("text-sm et-muted")
-            group_btn = ui.button("Group selected", icon="merge", on_click=lambda: group_dialog()).props("outline")
-            ungroup_btn = ui.button("Ungroup", icon="call_split", on_click=lambda: ungroup()).props("outline")
-
-        with ui.card().classes("w-full gap-4") as panel:
-            with ui.row().classes("w-full items-end gap-4 flex-wrap"):
-                kinds = ui.select({k.value: v for k, v in KIND_LABELS.items()}, multiple=True, label="Type",
-                                  on_change=lambda e: (setattr(f, "kinds", set(e.value or [])), apply())) \
-                    .props("outlined dense options-dense use-chips clearable").classes("w-60")
-                label_pick = ui.select({ledger.NO_LABEL: "No label"} | {lab.id: lab.name for lab in ledger.labels()},
-                                       multiple=True, label="Label", with_input=True,
-                                       on_change=lambda e: (setattr(f, "label_ids", set(e.value or [])), apply())) \
-                    .props("outlined dense options-dense use-chips clearable").classes("w-72")
-                direction = ui.toggle(DIRECTIONS, value=None,
-                                      on_change=lambda e: (setattr(f, "direction", e.value), apply())) \
-                    .props("unelevated no-caps toggle-color=primary color=transparent text-color=grey-8 "
-                           "padding='6px 12px'").classes("et-segment")
-            with ui.row().classes("w-full items-end gap-4 flex-wrap"):
-                def on_date(attr: str, value: str | None) -> None:
-                    setattr(f, attr, date.fromisoformat(value) if value else None)
-                    apply()
-
-                date_from = ui.input("From", on_change=lambda e: on_date("date_from", e.value)) \
-                    .props("outlined dense clearable type=date stack-label").classes("w-44")
-                date_to = ui.input("To", on_change=lambda e: on_date("date_to", e.value)) \
-                    .props("outlined dense clearable type=date stack-label").classes("w-44")
-
-                def on_amount(attr: str, value) -> None:
-                    setattr(f, attr, float(value) if value not in (None, "") else None)
-                    apply()
-
-                amount_min = ui.number("Min amount ₹", min=0, on_change=lambda e: on_amount("amount_min", e.value)) \
-                    .props("outlined dense clearable").classes("w-40")
-                amount_max = ui.number("Max amount ₹", min=0, on_change=lambda e: on_amount("amount_max", e.value)) \
-                    .props("outlined dense clearable").classes("w-40")
+        # Search, filters and group/ungroup stay pinned at the top while the list scrolls.
+        with ui.column().classes("w-full gap-3 et-sticky-bar"):
+            with ui.row().classes("w-full items-center gap-3"):
+                search = ui.input(placeholder="Search name, details, notes, label, amount…",
+                                  on_change=lambda e: (setattr(f, "search", e.value or ""), apply())) \
+                    .props("outlined dense clearable debounce=300").classes("w-80")
+                with search.add_slot("prepend"):
+                    ui.icon("search")
+                ui.select({None: "All accounts"} | accounts, value=None,
+                          on_change=lambda e: (setattr(f, "account_id", e.value), apply())) \
+                    .props("outlined dense options-dense").classes("w-52")
+                filters_btn = ui.button("Filters", icon="tune", on_click=lambda: panel.set_visibility(not panel.visible)) \
+                    .props("outline color=grey-8")
+                ui.switch("Unlabelled only", on_change=lambda e: (setattr(f, "unlabelled_only", e.value), apply())) \
+                    .classes("et-muted")
                 ui.space()
+                selection_label = ui.label().classes("text-sm et-muted")
+                group_btn = ui.button("Group selected", icon="merge", on_click=lambda: group_dialog()).props("outline")
+                ungroup_btn = ui.button("Ungroup", icon="call_split", on_click=lambda: ungroup()).props("outline")
 
-                def clear_filters() -> None:
-                    for el in (kinds, label_pick):
-                        el.set_value([])
-                    for el in (date_from, date_to, amount_min, amount_max):
-                        el.set_value(None)
-                    direction.set_value(None)
+            with ui.card().classes("w-full gap-4") as panel:
+                with ui.row().classes("w-full items-end gap-4 flex-wrap"):
+                    kinds = ui.select({k.value: v for k, v in KIND_LABELS.items()}, multiple=True, label="Type",
+                                      on_change=lambda e: (setattr(f, "kinds", set(e.value or [])), apply())) \
+                        .props("outlined dense options-dense use-chips clearable").classes("w-60")
+                    label_pick = ui.select({ledger.NO_LABEL: "No label"} | {lab.id: lab.name for lab in ledger.labels()},
+                                           multiple=True, label="Label", with_input=True,
+                                           on_change=lambda e: (setattr(f, "label_ids", set(e.value or [])), apply())) \
+                        .props("outlined dense options-dense use-chips clearable").classes("w-72")
+                    direction = ui.toggle(DIRECTIONS, value=None,
+                                          on_change=lambda e: (setattr(f, "direction", e.value), apply())) \
+                        .props("unelevated no-caps toggle-color=primary color=transparent text-color=grey-8 "
+                               "padding='6px 12px'").classes("et-segment")
+                with ui.row().classes("w-full items-end gap-4 flex-wrap"):
+                    def on_date(attr: str, value: str | None) -> None:
+                        setattr(f, attr, date.fromisoformat(value) if value else None)
+                        apply()
 
-                ui.button("Clear filters", icon="filter_alt_off", on_click=clear_filters).props("flat")
-        panel.set_visibility(False)
+                    date_from = ui.input("From", on_change=lambda e: on_date("date_from", e.value)) \
+                        .props("outlined dense clearable type=date stack-label").classes("w-44")
+                    date_to = ui.input("To", on_change=lambda e: on_date("date_to", e.value)) \
+                        .props("outlined dense clearable type=date stack-label").classes("w-44")
+
+                    def on_amount(attr: str, value) -> None:
+                        setattr(f, attr, float(value) if value not in (None, "") else None)
+                        apply()
+
+                    amount_min = ui.number("Min amount ₹", min=0, on_change=lambda e: on_amount("amount_min", e.value)) \
+                        .props("outlined dense clearable").classes("w-40")
+                    amount_max = ui.number("Max amount ₹", min=0, on_change=lambda e: on_amount("amount_max", e.value)) \
+                        .props("outlined dense clearable").classes("w-40")
+                    ui.space()
+
+                    def clear_filters() -> None:
+                        for el in (kinds, label_pick):
+                            el.set_value([])
+                        for el in (date_from, date_to, amount_min, amount_max):
+                            el.set_value(None)
+                        direction.set_value(None)
+
+                    ui.button("Clear filters", icon="filter_alt_off", on_click=clear_filters).props("flat")
+            panel.set_visibility(False)
 
         def update_selection() -> None:
             n = len(state["selected"])
@@ -277,7 +279,11 @@ def transactions_page() -> None:
                 months.refresh()
 
         def ungroup() -> None:
-            ledger.ungroup_transactions(list(state["selected"]))
+            try:
+                ledger.ungroup_transactions(list(state["selected"]))
+            except ValueError as exc:  # a group with a split on it
+                ui.notify(str(exc), type="warning")
+                return
             state["selected"].clear()
             update_selection()
             months.refresh()

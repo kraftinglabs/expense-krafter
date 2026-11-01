@@ -122,6 +122,30 @@ def _record(t: Transaction, acc: str, lab: str | None, color: str | None, sub: s
             "amount": amount_minor / 100, "sublabel": sub or UNLABELLED}
 
 
+def _group_debits(group_ids: set[int]) -> dict[int, list[tuple[int, int]]]:
+    """(transaction id, amount) of the payments in each group."""
+    out: dict[int, list[tuple[int, int]]] = {}
+    if group_ids:
+        with get_session() as s:
+            for t in s.exec(select(Transaction).where(Transaction.group_id.in_(group_ids),
+                                                      Transaction.direction == Direction.debit,
+                                                      Transaction.expected == False)):  # noqa: E712
+                out.setdefault(t.group_id, []).append((t.id, t.amount_minor))
+    return out
+
+
+def _spread(amount: int, items: list[tuple[int, int]]) -> list[tuple[int, int]]:
+    """Split `amount` over items in proportion to their amounts; the rounding
+    remainder goes to the biggest one."""
+    total = sum(a for _, a in items)
+    if total <= 0:
+        return []
+    parts = [(i, amount * a // total) for i, a in items]
+    biggest = max(range(len(items)), key=lambda k: items[k][1])
+    parts[biggest] = (parts[biggest][0], parts[biggest][1] + amount - sum(p for _, p in parts))
+    return parts
+
+
 def spend_frame(period: Period | None = None, account_id: int | None = None) -> pd.DataFrame:
     """One row per spend item, in rupees. Refunds and reimbursements not linked
     to an expense are negative rows on the day the money came back."""
@@ -133,9 +157,16 @@ def spend_frame(period: Period | None = None, account_id: int | None = None) -> 
         links = s.exec(select(ReimbursementLink)).all()
     off_expense: dict[int, int] = {}  # expense txn id -> reimbursed amount
     from_credit: dict[int, int] = {}  # credit txn id -> amount taken off a single expense
+    group_links = [link for link in links if link.expense_group_id is not None]
+    members = _group_debits({link.expense_group_id for link in group_links})
     for link in links:
         if link.expense_txn_id is not None:
             off_expense[link.expense_txn_id] = off_expense.get(link.expense_txn_id, 0) + link.amount_minor
+            from_credit[link.credit_txn_id] = from_credit.get(link.credit_txn_id, 0) + link.amount_minor
+        elif link.expense_group_id is not None and (items := members.get(link.expense_group_id)):
+            # Paid back for a whole group (e.g. a trip): off its payments in proportion.
+            for txn_id, part in _spread(link.amount_minor, items):
+                off_expense[txn_id] = off_expense.get(txn_id, 0) + part
             from_credit[link.credit_txn_id] = from_credit.get(link.credit_txn_id, 0) + link.amount_minor
 
     records = []

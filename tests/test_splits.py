@@ -143,3 +143,59 @@ def test_pending_split_rules(card_ids):
     splits.delete_split(pending)
     with get_session() as s:
         assert s.get(Transaction, pending) is None
+
+
+@pytest.fixture
+def trip(tmp_path):
+    """A trip: hotel ₹6,000 and cab ₹2,000, grouped; then the company pays back ₹8,000."""
+    init_db(db_path=tmp_path / "t.db")
+    with get_session() as s:
+        bank = Account(name="Bank", type=AccountType.bank)
+        s.add(bank)
+        s.flush()
+        rows = [(date(2026, 10, 3), "POS HOTEL", 6000, Direction.debit, TxnKind.expense),
+                (date(2026, 10, 4), "UPI/DR/2/CABS/c@y", 2000, Direction.debit, TxnKind.expense),
+                (date(2026, 10, 20), "NEFT ACME CORP TRAVEL CLAIM", 8000, Direction.credit, TxnKind.income)]
+        txns = [Transaction(account_id=bank.id, txn_date=d, description=desc, amount_minor=r * 100, direction=dr,
+                            kind=k, fingerprint=f"t{i}") for i, (d, desc, r, dr, k) in enumerate(rows)]
+        s.add_all(txns)
+        s.commit()
+        ids = [t.id for t in txns]
+    group = ledger.group_transactions(ids[:2], "Goa trip")
+    return group.id, ids
+
+
+def test_split_a_whole_group(trip):
+    gid, (hotel, cab, claim) = trip
+    [option] = splits.group_candidates()
+    assert (option.name, option.count, option.amount_minor) == ("Goa trip", 2, 800000)
+    assert all(t.id not in (hotel, cab) for t, _ in splits.expense_candidates())  # split as the group
+
+    splits.save_split(None, {"Company": 800000}, group_id=gid)
+    [sp] = splits.splits()
+    assert (sp.group_id, sp.name, sp.amount_minor, sp.members, sp.txn_date) == (gid, "Goa trip", 800000, 2,
+                                                                                 date(2026, 10, 3))
+    assert splits.group_candidates() == []
+
+    # Before the claim is paid: the trip counts in full.
+    assert analytics.spend_frame()["amount"].sum() == 8000
+    splits.record_repayment(None, claim, "company", 800000, group_id=gid)
+    assert splits.splits()[0].settled
+    df = analytics.spend_frame()
+    assert df.set_index("id")["amount"].to_dict() == {hotel: 0, cab: 0}  # nothing left as your spend
+    assert analytics.income_frame().empty or analytics.income_frame()["amount"].sum() == 0
+
+    with pytest.raises(ValueError, match="has a split"):
+        ledger.ungroup_transactions([hotel, cab])
+    ledger.ungroup_transactions([cab])  # part of it is fine
+    splits.delete_split(None, group_id=gid)
+    assert splits.splits() == []
+
+
+def test_group_repayment_is_spread_by_amount(trip):
+    gid, (hotel, cab, claim) = trip
+    splits.save_split(None, {"Company": 400000}, group_id=gid)
+    splits.record_repayment(None, claim, "Company", 400000, group_id=gid)
+    df = analytics.spend_frame().set_index("id")["amount"]
+    assert (df[hotel], df[cab]) == (3000, 1000)  # ₹4,000 back, 3:1 like the payments
+    assert df.drop([hotel, cab]).tolist() == [-4000]  # the rest of the claim, unassigned
