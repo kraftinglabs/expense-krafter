@@ -11,7 +11,7 @@ Windows, macOS and any Linux desktop (including Wayland compositors like
 Hyprland). Needs Python 3.11+ and [pipx](https://pipx.pypa.io).
 
 ```bash
-pipx install /path/to/ExpenseKrafter     # a clone of this repo (or git+https://github.com/<you>/ExpenseKrafter)
+pipx install git+https://github.com/kraftinglabs/expense-krafter   # or the path to a clone
 expensekrafter --web                     # serves http://localhost:8080 and opens your browser
 ```
 
@@ -27,6 +27,7 @@ network you don't trust: plain HTTP sends the password unencrypted.
 ### Docker
 
 ```bash
+git clone https://github.com/kraftinglabs/expense-krafter.git && cd expense-krafter
 docker build -t expensekrafter .
 docker run -d --name expensekrafter -p 127.0.0.1:8080:8080 \
     -v ~/Documents/ExpenseKrafter:/data -e EXPENSEKRAFTER_PASSWORD='choose-one' expensekrafter
@@ -47,6 +48,8 @@ you can skip the password by appending
 ## Run from source
 
 ```bash
+git clone https://github.com/kraftinglabs/expense-krafter.git
+cd expense-krafter
 python -m venv .venv
 .venv/Scripts/python -m pip install -e ".[dev,desktop]"   # Linux/macOS: .venv/bin/python
 .venv/Scripts/python -m expensekrafter            # desktop window
@@ -154,10 +157,11 @@ Dedup and saving are handled for you.
 | Use case | State |
 |---|---|
 | Import Excel/CSV/PDF, monthly tables | Generic parsers; bank-specific ones need samples |
-| Labels | Inline editing in the grid |
-| Group transactions | Done |
+| Labels | Inline editing; label groups (e.g. SIP under Investments) |
+| Expense groups | Done: groups for trips/events, filled any time, card expenses not imported yet |
 | Card statements ↔ bank payments, pending bills | Manual statement entry + payment linking |
-| Splits / reimbursements | Schema ready, UI next |
+| Splits / reimbursements | Done: per transaction or group, repayments, pending card splits, salary reimbursements |
 | Recurring | Recurring labels; auto-detection next |
 | Due-date alerts | Desktop notification on launch and every 6 h |
-| Duplicate detection | Done (fingerprints) |
+| Duplicate detection | Done (fingerprints, plus running balance for bank rows) |
+| Windows: Send to / Share sheet | Done (Share sheet needs a self-signed package: `packaging/windows/share_target.py`) |
