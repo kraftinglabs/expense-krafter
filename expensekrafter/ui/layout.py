@@ -7,7 +7,7 @@ from pathlib import Path
 from nicegui import app, ui
 
 from ..config import save_settings, settings
-from ..services import inbox
+from ..services import inbox, money
 
 NAV = [
     ("Dashboard", "/", "space_dashboard"),
@@ -28,6 +28,10 @@ LOGO_PNG = Path(__file__).with_name("logo.png")
 FONTS = ('<link rel="preconnect" href="https://fonts.googleapis.com">'
          '<link rel="stylesheet" href="https://fonts.googleapis.com/css2?'
          'family=Geist:wght@300;400;500;600&display=swap">')
+
+# Amounts are hidden per browser / window (the eye button in each page header).
+HIDE_KEY = "hide_money"
+money.set_hidden_check(lambda: app.storage.user.get(HIDE_KEY, False))
 
 # Set at startup if another machine seems to have the DB open.
 startup_warning: str | None = None
@@ -114,6 +118,18 @@ def _check_inbox() -> None:
     ui.navigate.to("/import")
 
 
+def _hide_toggle() -> None:
+    hidden = money.hidden()
+
+    def flip() -> None:
+        app.storage.user[HIDE_KEY] = not hidden
+        ui.navigate.reload()  # charts and tables are drawn on the server, so redraw them
+
+    ui.button(icon="visibility_off" if hidden else "visibility", on_click=flip) \
+        .props("flat round color=grey-7").classes("et-hide-toggle") \
+        .tooltip("Show amounts" if hidden else "Hide amounts (shows **** instead)")
+
+
 @contextmanager
 def frame(title: str, subtitle: str = ""):
     ui.dark_mode(is_dark())
@@ -131,6 +147,8 @@ def frame(title: str, subtitle: str = ""):
                 ui.label(title).classes("et-display text-3xl font-semibold")
                 if subtitle:
                     ui.label(subtitle).classes("et-muted text-sm")
+            ui.space()
+            _hide_toggle()
         if startup_warning:
             with ui.element("div").classes("et-card w-full p-4 border-amber-500/40"):
                 with ui.row().classes("items-center gap-3"):

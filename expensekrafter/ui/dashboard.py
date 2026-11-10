@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
+import re
 from datetime import date, timedelta
 
 import pandas as pd
 import plotly.graph_objects as go
 from nicegui import app, ui
 
-from ..services import analytics, cards, ledger
+from ..services import analytics, cards, ledger, money
 from ..services.money import fmt
 from .layout import frame, is_dark
 
@@ -40,7 +41,31 @@ def _c() -> dict:
 
 
 def _rupees(v: float) -> str:
+    if money.hidden():
+        return money.masked()
     return f"−₹{-v:,.0f}" if round(v) < 0 else f"₹{v:,.0f}"
+
+
+_MONEY_FIELD = re.compile(r"[+−-]?₹%\{[^}]*\}")
+
+
+def _mask(fig: go.Figure) -> go.Figure:
+    """With amounts hidden: no money on axes, in tooltips or in colour scales.
+    (Bar labels and annotations already come masked from _rupees.)"""
+    if not money.hidden():
+        return fig
+    for trace in fig.data:
+        if getattr(trace, "hovertemplate", None):
+            trace.hovertemplate = _MONEY_FIELD.sub(money.masked(), trace.hovertemplate)
+        if trace.type == "pie":
+            trace.hoverinfo, trace.hovertemplate = None, "<b>%{label}</b><br>%{percent}<extra></extra>"
+    fig.for_each_xaxis(lambda ax: ax.update(showticklabels=False) if ax.tickprefix == "₹" else None)
+    fig.for_each_yaxis(lambda ax: ax.update(showticklabels=False) if ax.tickprefix == "₹" else None)
+    return fig
+
+
+def _plotly(fig: go.Figure):
+    return ui.plotly(_mask(fig))
 
 
 def _style(fig: go.Figure, height: int = 320, legend: bool = False) -> go.Figure:
@@ -117,7 +142,7 @@ def _hero_trend(series: pd.Series, daily: bool) -> None:
                             (pd.Timestamp(x[-1]) + pad).strftime("%Y-%m-%d")])
     # Start at zero so heights compare honestly; headroom for the end marker.
     fig.update_yaxes(visible=False, range=[0, max(y) * 1.15], fixedrange=True)
-    ui.plotly(fig).classes("w-full mt-2")
+    _plotly(fig).classes("w-full mt-2")
 
 
 def _kpi(title: str, value: str, icon: str, sub: str = "", sub_class: str = "et-faint") -> None:
@@ -238,7 +263,7 @@ def spend_over_time(df: pd.DataFrame, period: analytics.Period | None) -> None:
                 when = rows["date"].iloc[0].strftime("%a %d %b %Y") if daily else bucket
                 _bar_transactions(rows, label, when)
 
-        ui.plotly(fig).classes("w-full et-click-bars").on("plotly_click", on_click)
+        _plotly(fig).classes("w-full et-click-bars").on("plotly_click", on_click)
 
 
 def cash_flow(spend: pd.DataFrame, income: pd.DataFrame, period: analytics.Period | None) -> None:
@@ -266,7 +291,7 @@ def cash_flow(spend: pd.DataFrame, income: pd.DataFrame, period: analytics.Perio
         fig.update_layout(barmode="group", bargap=0.3, bargroupgap=0.08, hovermode="x unified")
         fig.update_xaxes(tickformat="%b %Y", dtick="M1", hoverformat="%B %Y")
         fig.update_yaxes(zeroline=True, zerolinecolor=_c()["axis"])
-        ui.plotly(fig).classes("w-full")
+        _plotly(fig).classes("w-full")
 
 
 def balance_chart(daily: pd.DataFrame, period: analytics.Period | None) -> None:
@@ -290,7 +315,7 @@ def balance_chart(daily: pd.DataFrame, period: analytics.Period | None) -> None:
         _style(fig, height=320, legend=True)
         fig.update_layout(hovermode="x unified", colorway=[_c()["accent"], "#2a78d6", "#eda100", "#6250d6"])
         fig.update_xaxes(hoverformat="%d %b %Y")
-        ui.plotly(fig).classes("w-full")
+        _plotly(fig).classes("w-full")
 
 
 LABEL_TOP = 5
@@ -341,7 +366,7 @@ def _label_breakdown(df: pd.DataFrame, kind: str) -> None:
             ui.space()
             ui.button(icon="close", on_click=dialog.close).props("flat round dense")
         with ui.element("div").classes("grid grid-cols-1 md:grid-cols-2 gap-6 w-full items-start"):
-            ui.plotly(_label_figure(totals, kind, height=None if kind == "bar" else 420)).classes("w-full")
+            _plotly(_label_figure(totals, kind, height=None if kind == "bar" else 420)).classes("w-full")
             with ui.column().classes("w-full gap-0"):
                 for r in totals.itertuples():
                     with ui.row().classes("w-full items-center no-wrap gap-3 py-2 et-hero-rule"):
@@ -378,7 +403,7 @@ def by_label(df: pd.DataFrame) -> None:
             if df.empty:
                 return _empty()
             totals = analytics.label_totals(df, top=LABEL_TOP)
-            ui.plotly(_label_figure(totals, kind.value)).classes("w-full")
+            _plotly(_label_figure(totals, kind.value)).classes("w-full")
             if analytics.MISC in totals["label"].values:
                 hidden = df["label"].nunique() - LABEL_TOP
                 ui.button(f"Show all labels ({hidden} more in Miscellaneous)", icon="open_in_full",
@@ -389,6 +414,8 @@ def by_label(df: pd.DataFrame) -> None:
 
 
 def _signed(v: float) -> str:
+    if money.hidden():
+        return money.masked()
     return f"+₹{v:,.0f}" if v > 0 else f"−₹{-v:,.0f}"
 
 
@@ -422,7 +449,7 @@ def what_changed(df: pd.DataFrame, period: analytics.Period | None, account_id: 
         fig.update_xaxes(visible=False, range=[lo - pad if lo < 0 else 0, hi + pad if hi > 0 else 0])
         fig.update_yaxes(gridcolor="rgba(0,0,0,0)", tickprefix="")
         fig.add_vline(x=0, line=dict(color=_c()["axis"], width=1))
-        ui.plotly(fig).classes("w-full")
+        _plotly(fig).classes("w-full")
         up, down = changes["change"].clip(lower=0).sum(), -changes["change"].clip(upper=0).sum()
         ui.label(f"▲ {_rupees(up)} more on {int((changes['change'] > 0).sum())} labels · "
                  f"▼ {_rupees(down)} less on {int((changes['change'] < 0).sum())}").classes("et-faint text-xs")
@@ -450,7 +477,7 @@ def spending_calendar(df: pd.DataFrame, period: analytics.Period | None) -> None
         for r in days.itertuples():
             i, j = r.date.weekday(), col[r.week]
             z[i][j] = r.amount
-            text[i][j] = (f"{r.date:%a %d %b %Y}<br>₹{r.amount:,.0f} · {r.count} payment{'s' if r.count != 1 else ''}"
+            text[i][j] = (f"{r.date:%a %d %b %Y}<br>{_rupees(r.amount)} · {r.count} payment{'s' if r.count != 1 else ''}"
                           if r.count else f"{r.date:%a %d %b %Y}<br>No spend")
         # Cap the scale at the 95th percentile so one rent day doesn't wash out the rest.
         spent = days.loc[days["amount"] > 0, "amount"]
@@ -464,7 +491,7 @@ def spending_calendar(df: pd.DataFrame, period: analytics.Period | None) -> None
         fig.update_yaxes(autorange="reversed", gridcolor="rgba(0,0,0,0)", tickprefix="", tickformat="",
                          fixedrange=True)
         fig.update_xaxes(tickformat="%d %b", nticks=8, linecolor="rgba(0,0,0,0)", fixedrange=True)
-        ui.plotly(fig).classes("w-full")
+        _plotly(fig).classes("w-full")
         by_day = days.assign(wd=days["date"].dt.weekday).groupby("wd")["amount"].mean()
         busiest = weekdays[int(by_day.idxmax())] if by_day.max() > 0 else None
         quiet = int((days["count"] == 0).sum())
@@ -537,7 +564,7 @@ def month_pace(account_id: int | None) -> None:
         _style(fig, legend=True)
         fig.update_layout(hovermode="x unified", margin=dict(r=110))
         fig.update_xaxes(range=[1, 31], dtick=5, title_text="Day of month")
-        ui.plotly(fig).classes("w-full")
+        _plotly(fig).classes("w-full")
 
 
 def top_merchants(df: pd.DataFrame, n: int = 10) -> None:
@@ -555,7 +582,7 @@ def top_merchants(df: pd.DataFrame, n: int = 10) -> None:
         fig.update_traces(marker_cornerradius=4)
         fig.update_xaxes(visible=False, range=[0, top["amount"].max() * 1.3])
         fig.update_yaxes(gridcolor="rgba(0,0,0,0)", tickprefix="")
-        ui.plotly(fig).classes("w-full")
+        _plotly(fig).classes("w-full")
 
 
 def by_account(df: pd.DataFrame) -> None:
@@ -572,7 +599,7 @@ def by_account(df: pd.DataFrame) -> None:
         fig.update_traces(marker_cornerradius=4)
         fig.update_xaxes(visible=False, range=[0, totals.max() * 1.3])
         fig.update_yaxes(gridcolor="rgba(0,0,0,0)", tickprefix="")
-        ui.plotly(fig).classes("w-full")
+        _plotly(fig).classes("w-full")
 
 
 def recurring() -> None:

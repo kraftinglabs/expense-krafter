@@ -10,6 +10,7 @@ from nicegui import app, ui
 
 from ..db.models import AccountType
 from ..services import ledger, payroll, splits
+from ..services import money
 from ..services.money import fmt, to_minor
 from .layout import frame
 
@@ -17,6 +18,8 @@ SHOW = {"open": "Open", "settled": "Settled", "all": "All"}
 
 
 def _rupees(minor: int) -> str:
+    if money.hidden():
+        return money.masked()
     return f"₹{minor / 100:,.0f}" if minor % 100 == 0 else fmt(minor)
 
 
