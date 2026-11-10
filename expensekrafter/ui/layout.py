@@ -118,16 +118,32 @@ def _check_inbox() -> None:
     ui.navigate.to("/import")
 
 
+def on_hide_change(*redraw) -> None:
+    """Sections of the current page that show amounts (refreshables or plain
+    functions): the eye button redraws them instead of reloading the page, so
+    search, filters and open sections stay as they are."""
+    client = ui.context.client
+    if not hasattr(client, "et_hide_redraw"):
+        client.et_hide_redraw = []
+    client.et_hide_redraw.extend(redraw)
+
+
 def _hide_toggle() -> None:
-    hidden = money.hidden()
+    client = ui.context.client
+
+    def show(hidden: bool) -> None:
+        button.props(f"icon={'visibility_off' if hidden else 'visibility'}")
+        tip.text = "Show amounts" if hidden else "Hide amounts"
 
     def flip() -> None:
-        app.storage.user[HIDE_KEY] = not hidden
-        ui.navigate.reload()  # charts and tables are drawn on the server, so redraw them
+        app.storage.user[HIDE_KEY] = not money.hidden()
+        show(money.hidden())
+        for redraw in getattr(client, "et_hide_redraw", []):
+            redraw.refresh() if hasattr(redraw, "refresh") else redraw()
 
-    ui.button(icon="visibility_off" if hidden else "visibility", on_click=flip) \
-        .props("flat round color=grey-7").classes("et-hide-toggle") \
-        .tooltip("Show amounts" if hidden else "Hide amounts (shows **** instead)")
+    with ui.button(on_click=flip).props("flat round color=grey-7").classes("et-hide-toggle") as button:
+        tip = ui.tooltip()
+    show(money.hidden())
 
 
 @contextmanager

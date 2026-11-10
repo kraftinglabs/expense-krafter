@@ -14,7 +14,7 @@ from ..services import analytics, importer, inbox, ledger, narration, splits, va
 from ..services.importer import ImportPreview, default_kind, commit_import, preview_import
 from ..services.money import fmt
 from . import icons
-from .layout import frame
+from .layout import frame, on_hide_change
 from .transactions import KIND_LABELS
 
 # A bank statement older than this probably means a month hasn't been imported.
@@ -384,6 +384,13 @@ def import_page() -> None:
                 import_history()
 
         overview()
+
+        def redraw_preview() -> None:
+            if state.get("preview") and state.get("grid_box"):  # a statement being previewed
+                render_grid()
+                update_summary()
+
+        on_hide_change(sent, overview, redraw_preview)
 
         ui.label("Tip: the generic parsers handle most Excel exports. Share a sample PDF per bank/card "
                  "to get a dedicated parser. Password-protected files will ask for the password.") \

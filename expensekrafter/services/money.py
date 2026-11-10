@@ -3,8 +3,9 @@ from __future__ import annotations
 from collections.abc import Callable
 from decimal import Decimal
 
-# "Hide amounts" (the eye button): every formatted amount becomes this.
-MASK = "****"
+# "Hide amounts" (the eye button): every formatted amount becomes this. U+2217
+# (asterisk operator) sits level with ₹; a plain * hangs near the top of the line.
+MASK = "\u2217" * 4
 _hidden_check: Callable[[], bool] = lambda: False
 
 

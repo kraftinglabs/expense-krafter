@@ -10,7 +10,7 @@ from ..db.models import Account, AccountType, Direction, Transaction
 from ..services import cards
 from ..services.money import fmt, to_minor
 from . import icons
-from .layout import frame
+from .layout import frame, on_hide_change
 
 def _due_chip(x: cards.StatementStatus) -> tuple[str, str]:
     """(chip css class, text) for the due-date status."""
@@ -119,3 +119,4 @@ def cards_page() -> None:
             dlg.open()
 
         statement_list()
+        on_hide_change(statement_list)

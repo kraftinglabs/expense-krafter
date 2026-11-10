@@ -11,7 +11,7 @@ from ..db.models import AccountType, Direction
 from ..services import groups, ledger
 from ..services import money
 from ..services.money import fmt, to_minor
-from .layout import frame
+from .layout import frame, on_hide_change
 
 
 def _rupees(minor: int) -> str:
@@ -203,4 +203,5 @@ def groups_page() -> None:
 
         with ui.column().classes("w-full gap-3"):
             listing()
+        on_hide_change(listing)
         dialog_host = ui.element("div")

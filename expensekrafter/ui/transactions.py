@@ -14,7 +14,7 @@ from ..services import groups, ledger, narration
 from ..services.analytics import merchant_name
 from ..services.money import fmt
 from . import icons
-from .layout import frame
+from .layout import frame, on_hide_change
 
 KIND_LABELS = ledger.KIND_LABELS
 DIRECTIONS = {None: "All", "debit": "Money out", "credit": "Money in"}
@@ -320,3 +320,4 @@ def transactions_page() -> None:
         update_selection()
         with ui.column().classes("w-full gap-3"):
             months()
+        on_hide_change(months)  # open months and the search stay as they are
