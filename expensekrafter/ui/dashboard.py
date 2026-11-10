@@ -11,7 +11,7 @@ from nicegui import app, ui
 
 from ..services import analytics, cards, ledger, money
 from ..services.money import fmt
-from .layout import frame, is_dark
+from .layout import frame, is_dark, on_hide_change
 
 PERIODS = {"this_month": "This month", "last_month": "Last month", "3m": "Last 3 months",
            "6m": "Last 6 months", "12m": "Last 12 months", "ytd": "This year", "all": "All time"}
@@ -195,7 +195,8 @@ def _days_elapsed(df: pd.DataFrame, period: analytics.Period | None) -> int:
 
 
 def _bar_transactions(rows: pd.DataFrame, label: str, when: str) -> None:
-    """Dialog listing the transactions behind one bar of 'Spend over time'."""
+    """Dialog listing the transactions behind one bar of 'Spend over time' or
+    one day of the spending calendar."""
     rows = rows.sort_values("amount", ascending=False)
     several = rows["label_orig"].nunique() > 1  # "Other" or a group label holds several labels
     with ui.dialog() as dialog, ui.card().classes("w-[60rem] max-w-full gap-3"):
@@ -464,7 +465,8 @@ def spending_calendar(df: pd.DataFrame, period: analytics.Period | None) -> None
     first = period.start if period else (df["date"].min().date() if not df.empty else end)
     start = max(first, end - timedelta(days=CALENDAR_MAX_DAYS))
     note = " (latest year)" if start > first else ""
-    with _chart_card("Spending calendar", f"Spend per day, by week{note}; darker is more"):
+    with _chart_card("Spending calendar", f"Spend per day, by week{note}; darker is more · "
+                                          "click a day to see its transactions"):
         if df.empty or start >= end:
             return _empty()
         days = analytics.daily_spend(df, start, end)
@@ -473,17 +475,20 @@ def spending_calendar(df: pd.DataFrame, period: analytics.Period | None) -> None
         weekdays = ["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"]
         z = [[None] * len(weeks) for _ in weekdays]
         text = [[""] * len(weeks) for _ in weekdays]
+        when = [[""] * len(weeks) for _ in weekdays]  # each square's date, for clicks
         col = {w: i for i, w in enumerate(weeks)}
         for r in days.itertuples():
             i, j = r.date.weekday(), col[r.week]
             z[i][j] = r.amount
+            when[i][j] = r.date.date().isoformat()
             text[i][j] = (f"{r.date:%a %d %b %Y}<br>{_rupees(r.amount)} · {r.count} payment{'s' if r.count != 1 else ''}"
                           if r.count else f"{r.date:%a %d %b %Y}<br>No spend")
         # Cap the scale at the 95th percentile so one rent day doesn't wash out the rest.
         spent = days.loc[days["amount"] > 0, "amount"]
         cap = float(spent.quantile(0.95)) if len(spent) else 1.0
         fig = go.Figure(go.Heatmap(
-            z=z, x=_iso(pd.DatetimeIndex(weeks)), y=weekdays, text=text, hovertemplate="%{text}<extra></extra>",
+            z=z, x=_iso(pd.DatetimeIndex(weeks)), y=weekdays, text=text, customdata=when,
+            hovertemplate="%{text}<extra></extra>",
             colorscale=[[0, _c()["empty"]], [0.001, _c()["heat_lo"]], [1, _c()["accent"]]], zmin=0, zmax=max(cap, 1),
             xgap=3, ygap=3, showscale=False,
         ))
@@ -491,7 +496,20 @@ def spending_calendar(df: pd.DataFrame, period: analytics.Period | None) -> None
         fig.update_yaxes(autorange="reversed", gridcolor="rgba(0,0,0,0)", tickprefix="", tickformat="",
                          fixedrange=True)
         fig.update_xaxes(tickformat="%d %b", nticks=8, linecolor="rgba(0,0,0,0)", fixedrange=True)
-        _plotly(fig).classes("w-full")
+        fig.update_layout(dragmode=False)
+
+        def on_click(e) -> None:
+            points = (e.args or {}).get("points") or []
+            if not points or not points[0].get("customdata"):
+                return  # a square outside the period
+            day = pd.Timestamp(points[0]["customdata"])
+            rows = df[df["date"].dt.normalize() == day].assign(label_orig=df["sublabel"])
+            if rows.empty:
+                ui.notify(f"No spend on {day:%a %d %b %Y}")
+                return
+            _bar_transactions(rows, "Spending", f"{day:%a %d %b %Y}")
+
+        _plotly(fig).classes("w-full et-click-bars").on("plotly_click", on_click)
         by_day = days.assign(wd=days["date"].dt.weekday).groupby("wd")["amount"].mean()
         busiest = weekdays[int(by_day.idxmax())] if by_day.max() > 0 else None
         quiet = int((days["count"] == 0).sum())
@@ -724,3 +742,4 @@ def dashboard_page() -> None:
             recurring()
 
         content()
+        on_hide_change(content)
