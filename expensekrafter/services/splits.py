@@ -293,7 +293,8 @@ def pending_items() -> list[Split]:
         rows = s.exec(select(Transaction, Account.name, Label.name)
                       .join(Account, Account.id == Transaction.account_id)
                       .join(Label, Label.id == Transaction.label_id, isouter=True)
-                      .where(Transaction.expected == True)  # noqa: E712
+                      .where(Transaction.expected == True,  # noqa: E712
+                             Transaction.kind != TxnKind.cc_payment)  # card bills marked paid: see cards.py
                       .order_by(col(Transaction.txn_date).desc())).all()
     return [by_id.get(t.id) or Split(t.id, t.txn_date, t.description, acc, lab or "", t.amount_minor,
                                      expected=True, account_id=t.account_id) for t, acc, lab in rows]

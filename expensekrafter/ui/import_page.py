@@ -10,7 +10,7 @@ from nicegui import events, ui
 
 from ..db.models import AccountType, Direction, TxnKind
 from ..importers import PasswordRequired, parser_options
-from ..services import analytics, importer, inbox, ledger, narration, splits, vault
+from ..services import analytics, cards, importer, inbox, ledger, narration, splits, vault
 from ..services.importer import ImportPreview, default_kind, commit_import, preview_import
 from ..services.money import fmt
 from . import icons
@@ -335,8 +335,48 @@ def import_page() -> None:
                 inbox.remove(done)
                 sent.refresh()
             overview.refresh()
-            if matches := splits.pending_matches(importer.batch_txn_ids(batch.id)):
+            new_ids = importer.batch_txn_ids(batch.id)
+            if matches := splits.pending_matches(new_ids):
                 attach_pending(matches)
+            if payments := cards.payment_matches(new_ids):
+                attach_card_payments(payments)
+
+        def attach_card_payments(matches) -> None:
+            """Card bills you marked as paid whose bank debit is in this statement."""
+            picks = []
+            with dialog_host, ui.dialog() as dlg, ui.card().classes("w-[44rem] max-w-full gap-3"):
+                ui.label("Card payments waiting for this statement").classes("et-card-title")
+                ui.label("You marked these card bills as paid before this bank statement was imported. Attach "
+                         "them to the real debits.").classes("text-sm et-muted")
+                for x, pay, found in matches:
+                    with ui.column().classes("w-full gap-1 et-hero-rule pt-2"):
+                        tick = ui.checkbox(f"{x.account_name} bill · paid {pay.paid_on:%d %b %Y} · "
+                                           f"{fmt(pay.amount_minor)}", value=True)
+                        choice = ui.select({t.id: f"{t.txn_date:%d %b %Y} · {analytics.merchant_name(t.description)}"
+                                                  f" · {fmt(t.amount_minor)}" for t in found},
+                                           value=found[0].id).props("outlined dense options-dense").classes("w-full pl-8")
+                        choice.bind_enabled_from(tick, "value")
+                        picks.append((pay, tick, choice))
+
+                def attach() -> None:
+                    done = 0
+                    for pay, tick, choice in picks:
+                        if not tick.value or choice.value is None:
+                            continue
+                        try:
+                            cards.attach_payment(pay.txn_id, choice.value)
+                            done += 1
+                        except cards.CardError as exc:
+                            ui.notify(str(exc), type="warning")
+                    if done:
+                        ui.notify(f"Attached {done} card payment{'s' if done != 1 else ''}", type="positive")
+                    dlg.close()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Not now", on_click=dlg.close).props("flat")
+                    ui.button("Attach", icon="link", on_click=attach)
+            dlg.on("hide", dlg.delete)
+            dlg.open()
 
         def attach_pending(matches) -> None:
             """Pending splits that showed up in this statement: attach them in one go."""
