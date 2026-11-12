@@ -7,15 +7,15 @@ from sqlmodel import col, select
 
 from ..db import get_session
 from ..db.models import Account, AccountType, Direction, Transaction
-from ..services import cards
+from ..services import cards, ledger
 from ..services.money import fmt, to_minor
 from . import icons
-from .layout import frame
+from .layout import frame, on_hide_change
 
 def _due_chip(x: cards.StatementStatus) -> tuple[str, str]:
     """(chip css class, text) for the due-date status."""
     if x.status == "paid":
-        return "", "✓ Paid"
+        return "", "✓ Marked paid" if x.expected else "✓ Paid"
     days = x.days_to_due
     if days < 0:
         return "neg", f"Overdue by {-days} day{'s' if days != -1 else ''}"
@@ -75,9 +75,26 @@ def cards_page() -> None:
                     with ui.column().classes("gap-1 items-end w-48"):
                         ui.html(f'<span class="et-chip {chip_class}">{chip_text}</span>', sanitize=False)
                         ui.label(f"Due {x.statement.due_date:%d %b %Y}").classes("text-xs et-faint")
-                    if x.pending_minor:
-                        ui.button("Link payment", icon="link", on_click=lambda x=x: link_dialog(x)) \
-                            .props("outline")
+                    with ui.column().classes("gap-1 w-40 flex-none"):
+                        if x.pending_minor:
+                            ui.button("Mark as paid", icon="task_alt", on_click=lambda x=x: mark_dialog(x)) \
+                                .props("unelevated no-caps").classes("w-full") \
+                                .tooltip("Paid, but that bank statement isn't imported yet")
+                            ui.button("Link payment", icon="link", on_click=lambda x=x: link_dialog(x)) \
+                                .props("outline no-caps").classes("w-full") \
+                                .tooltip("Pick the debit from an imported bank statement")
+                # Payments marked by hand, until their bank statement is imported.
+                for pay in x.expected:
+                    with ui.row().classes("w-full items-center gap-3 no-wrap pt-2 et-hero-rule"):
+                        ui.icon("schedule").classes("et-faint")
+                        ui.label(f"{fmt(pay.amount_minor)} from {pay.account} on {pay.paid_on:%d %b %Y}"
+                                 + (f" · “{pay.note}”" if pay.note else "")).classes("text-sm flex-1 truncate")
+                        ui.label("waiting for bank statement").classes("et-chip flex-none") \
+                            .tooltip("Matched to the real debit when you import that bank statement")
+                        ui.button("Attach", icon="link", on_click=lambda pay=pay, x=x: attach_dialog(x, pay)) \
+                            .props("flat dense no-caps").tooltip("Pick the bank debit by hand")
+                        ui.button(icon="undo", on_click=lambda pay=pay: undo(pay)) \
+                            .props("flat round dense").tooltip("Undo Mark as paid")
 
         def add_dialog() -> None:
             if not card_accounts:
@@ -118,4 +135,81 @@ def cards_page() -> None:
                 ui.button("Link", on_click=save)
             dlg.open()
 
+        def mark_dialog(x: cards.StatementStatus) -> None:
+            banks = {a.id: a.name for a in ledger.accounts() if a.type == AccountType.bank}
+            with ui.dialog() as dlg, ui.card().classes("w-[32rem] max-w-full gap-3"):
+                ui.label(f"Mark {x.account_name} bill as paid").classes("et-card-title")
+                ui.label("For a payment whose bank statement isn't imported yet. The bill shows as paid now, and "
+                         "the payment is matched to the real debit when you import that statement.") \
+                    .classes("text-sm et-muted")
+                with ui.row().classes("w-full gap-2 no-wrap"):
+                    usual = cards.usual_payment_account(x.statement.account_id)
+                    account = ui.select(banks, label="Paid from",
+                                        value=usual if usual in banks else next(iter(banks), None)) \
+                        .props("outlined dense options-dense").classes("flex-1")
+                    paid_on = ui.input("Paid on", value=date.today().isoformat()) \
+                        .props("outlined dense type=date").classes("w-40")
+                    amount = ui.number("Amount ₹", value=x.pending_minor / 100, min=0, format="%.2f") \
+                        .props("outlined dense stack-label").classes("w-36")
+                note = ui.input("Note (optional)", placeholder="e.g. via CRED").props("outlined dense") \
+                    .classes("w-full")
+
+                def save() -> None:
+                    try:
+                        cards.mark_paid(x.statement.id, account.value, date.fromisoformat(paid_on.value),
+                                        to_minor(amount.value or 0), note.value or "")
+                    except (cards.CardError, TypeError, ValueError) as exc:
+                        ui.notify(str(exc) if isinstance(exc, cards.CardError) else "Pick the date",
+                                  type="warning")
+                        return
+                    ui.notify("Marked as paid", type="positive")
+                    dlg.close()
+                    statement_list.refresh()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Mark as paid", icon="check", on_click=save)
+            dlg.on("hide", dlg.delete)
+            dlg.open()
+
+        def attach_dialog(x: cards.StatementStatus, pay: cards.ExpectedPayment) -> None:
+            nearby = cards.payment_candidates(pay.txn_id)
+            options = nearby or cards.payment_candidates(pay.txn_id, nearby_only=False)
+            with ui.dialog() as dlg, ui.card().classes("w-[40rem] max-w-full gap-3"):
+                ui.label(f"Attach the {x.account_name} payment").classes("et-card-title")
+                ui.label(f"{fmt(pay.amount_minor)} from {pay.account} around {pay.paid_on:%d %b %Y}") \
+                    .classes("et-muted")
+                if not nearby:
+                    ui.label("No debit with that amount near that date; showing all debits on that account."
+                             if options else f"No debits on {pay.account} yet. Import its statement first.") \
+                        .classes("et-warn text-sm")
+                choice = ui.select({t.id: f"{t.txn_date:%d %b %Y} · {fmt(t.amount_minor)} · {t.description[:40]}"
+                                    for t in options}, label="Bank debit", with_input=True,
+                                   value=nearby[0].id if nearby else None) \
+                    .props("outlined dense options-dense").classes("w-full")
+
+                def attach() -> None:
+                    if choice.value is None:
+                        return
+                    try:
+                        cards.attach_payment(pay.txn_id, choice.value)
+                    except cards.CardError as exc:
+                        ui.notify(str(exc), type="warning")
+                        return
+                    ui.notify("Attached", type="positive")
+                    dlg.close()
+                    statement_list.refresh()
+
+                with ui.row().classes("w-full justify-end"):
+                    ui.button("Cancel", on_click=dlg.close).props("flat")
+                    ui.button("Attach", icon="link", on_click=attach)
+            dlg.on("hide", dlg.delete)
+            dlg.open()
+
+        def undo(pay: cards.ExpectedPayment) -> None:
+            cards.unmark_paid(pay.txn_id)
+            ui.notify("Mark as paid undone")
+            statement_list.refresh()
+
         statement_list()
+        on_hide_change(statement_list)

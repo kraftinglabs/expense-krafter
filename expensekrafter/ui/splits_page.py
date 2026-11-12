@@ -10,13 +10,16 @@ from nicegui import app, ui
 
 from ..db.models import AccountType
 from ..services import ledger, payroll, splits
+from ..services import money
 from ..services.money import fmt, to_minor
-from .layout import frame
+from .layout import frame, on_hide_change
 
 SHOW = {"open": "Open", "settled": "Settled", "all": "All"}
 
 
 def _rupees(minor: int) -> str:
+    if money.hidden():
+        return money.masked()
     return f"₹{minor / 100:,.0f}" if minor % 100 == 0 else fmt(minor)
 
 
@@ -560,6 +563,7 @@ def splits_page(new: str = "") -> None:
             dlg.open()
 
         salary_section()
+        on_hide_change(content, salary_section)
         # Dialogs are created here, not inside the card menu that opens them (a
         # closing menu would take its dialog with it).
         dialog_host = ui.element("div")
